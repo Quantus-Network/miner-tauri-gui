@@ -626,6 +626,8 @@ struct MinerStatus {
     current_block: Option<u64>,
     highest_block: Option<u64>,
     is_syncing: Option<bool>,
+    bootnode_connected: Option<bool>,
+    bootnode_host: Option<String>,
 }
 
 /// Attempt to parse a u64 from a JSON value that may be a number or a 0x-prefixed hex string.
@@ -719,6 +721,8 @@ async fn query_local_node_status() -> Result<MinerStatus> {
         current_block,
         highest_block,
         is_syncing,
+        bootnode_connected: None,
+        bootnode_host: None,
     })
 }
 
@@ -735,6 +739,8 @@ fn spawn_status_task(app: AppHandle) {
         let mut highest: Option<u64> = None;
         let mut peers: Option<u32> = None;
         let mut is_syncing: Option<bool> = None;
+        let mut bootnode_connected: Option<bool> = None;
+        let mut bootnode_host: Option<String> = None;
 
         // Keep a WS connection + subscription to local node heads; periodically poll health
         let mut sub_id: Option<String> = None;
@@ -768,6 +774,8 @@ fn spawn_status_task(app: AppHandle) {
                             current_block: best,
                             highest_block: highest,
                             is_syncing,
+                            bootnode_connected,
+                            bootnode_host: bootnode_host.clone(),
                         },
                     );
                     tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -875,7 +883,9 @@ fn spawn_status_task(app: AppHandle) {
                     { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) }
                 {
                     if let Some(url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
+                        bootnode_host = Some(url.to_string());
                         if let Ok((mut ws_b, _)) = tokio_tungstenite::connect_async(url).await {
+                            bootnode_connected = Some(true);
                             // Start a short-lived subscription to new heads and read one notification.
                             let req = serde_json::json!({
                                 "jsonrpc":"2.0","id":4242,"method":"chain_subscribeNewHeads","params":[]
@@ -883,9 +893,17 @@ fn spawn_status_task(app: AppHandle) {
                             let _ = ws_b.send(Message::Text(req.to_string())).await;
 
                             // First response is usually the subscription id; read it (best-effort).
-                            if let Ok(Some(Ok(Message::Text(_txt1)))) =
+                            let mut subscribed = false;
+                            if let Ok(Some(Ok(Message::Text(txt1)))) =
                                 tokio::time::timeout(Duration::from_millis(600), ws_b.next()).await
                             {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt1) {
+                                    if val.get("result").is_some() {
+                                        subscribed = true;
+                                    }
+                                }
+                            }
+                            if subscribed {
                                 // Then read the first head notification.
                                 if let Ok(Some(Ok(Message::Text(txt2)))) =
                                     tokio::time::timeout(Duration::from_millis(900), ws_b.next())
@@ -912,7 +930,47 @@ fn spawn_status_task(app: AppHandle) {
                                         }
                                     }
                                 }
+                            } else {
+                                // Fallback: call system_syncState once to get highestBlock
+                                let req_sync = serde_json::json!({
+                                    "jsonrpc":"2.0","id":4243,"method":"system_syncState","params":[]
+                                });
+                                let _ = ws_b.send(Message::Text(req_sync.to_string())).await;
+                                if let Ok(Some(Ok(Message::Text(txt2)))) =
+                                    tokio::time::timeout(Duration::from_millis(900), ws_b.next())
+                                        .await
+                                {
+                                    if let Ok(val) =
+                                        serde_json::from_str::<serde_json::Value>(&txt2)
+                                    {
+                                        if let Some(res) = val.get("result") {
+                                            if let Some(h) = res
+                                                .get("highestBlock")
+                                                .and_then(parse_u64_from_json)
+                                            {
+                                                let new_h = match highest {
+                                                    Some(x) => Some(x.max(h)),
+                                                    None => Some(h),
+                                                };
+                                                if new_h != highest {
+                                                    highest = new_h;
+                                                    got_update = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                        } else {
+                            // Could not connect to bootnode; record state and log to UI
+                            bootnode_connected = Some(false);
+                            let _ = app.emit(
+                                "miner:log",
+                                &LogMsg {
+                                    source: "ui",
+                                    line: format!("Bootnode connect failed: {}", url),
+                                },
+                            );
                         }
                     }
                 }
@@ -926,6 +984,8 @@ fn spawn_status_task(app: AppHandle) {
                         current_block: best,
                         highest_block: highest,
                         is_syncing,
+                        bootnode_connected,
+                        bootnode_host: bootnode_host.clone(),
                     },
                 );
             }

@@ -47,6 +47,10 @@ export default function App() {
   const [best, setBest] = useState<number | null>(null);
   const [highest, setHighest] = useState<number | null>(null);
   const [safeMode, setSafeMode] = useState<boolean>(false);
+  const [bootnodeConnected, setBootnodeConnected] = useState<boolean | null>(
+    null,
+  );
+  const [bootnodeHost, setBootnodeHost] = useState<string>("");
   const [meta, setMeta] = useState<Partial<MinerMeta>>(() => {
     try {
       const s = localStorage.getItem("qm.meta");
@@ -213,22 +217,36 @@ export default function App() {
         return next;
       });
     });
-    const un3 = onMinerStatus((s: MinerStatus & { safe_mode?: boolean }) => {
-      if (typeof s.peers === "number") setPeers(s.peers);
-      if (typeof s.current_block === "number") {
-        setBest(s.current_block);
-        // In case RPC provides better signal, prefer RPC over log parsing.
-        setStatus("Syncing");
-      }
-      if (typeof s.highest_block === "number") setHighest(s.highest_block);
-      if (typeof s.is_syncing === "boolean" && !s.is_syncing) {
-        // If RPC says not syncing and we have hashrate elsewhere, UI will move to Mining.
-        setSyncBlock(null);
-      }
-      if (typeof s.safe_mode === "boolean") {
-        setSafeMode(s.safe_mode);
-      }
-    });
+    const un3 = onMinerStatus(
+      (
+        s: MinerStatus & {
+          safe_mode?: boolean;
+          bootnode_connected?: boolean;
+          bootnode_host?: string;
+        },
+      ) => {
+        if (typeof s.peers === "number") setPeers(s.peers);
+        if (typeof s.current_block === "number") {
+          setBest(s.current_block);
+          // In case RPC provides better signal, prefer RPC over log parsing.
+          setStatus("Syncing");
+        }
+        if (typeof s.highest_block === "number") setHighest(s.highest_block);
+        if (typeof s.is_syncing === "boolean" && !s.is_syncing) {
+          // If RPC says not syncing and we have hashrate elsewhere, UI will move to Mining.
+          setSyncBlock(null);
+        }
+        if (typeof s.safe_mode === "boolean") {
+          setSafeMode(s.safe_mode);
+        }
+        if (typeof s.bootnode_connected === "boolean") {
+          setBootnodeConnected(s.bootnode_connected);
+        }
+        if (typeof s.bootnode_host === "string") {
+          setBootnodeHost(s.bootnode_host);
+        }
+      },
+    );
     const un4 = onMinerMeta((m: MinerMeta) => {
       setMeta((prev) => {
         const merged = { ...prev, ...m };
@@ -380,6 +398,26 @@ export default function App() {
               Safe Sync
             </div>
           )}
+          {bootnodeHost ? (
+            <div
+              className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
+                bootnodeConnected === false
+                  ? "bg-gray-600 text-white"
+                  : "bg-black/80 text-white"
+              }`}
+              title={
+                bootnodeConnected === false
+                  ? "Bootnode unreachable"
+                  : `Connected to ${bootnodeHost}`
+              }
+            >
+              {bootnodeConnected === false
+                ? "Bootnode: offline"
+                : `Connected: ${
+                    bootnodeHost.replace(/^wss?:\/\//, "").split("/")[0]
+                  }`}
+            </div>
+          ) : null}
           <div
             className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
               typeof peers !== "number"
