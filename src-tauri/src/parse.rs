@@ -32,9 +32,17 @@ pub fn parse_event(line: &str) -> Option<MinerEvent> {
     if l.contains("share accepted") || l.contains("accepted share") {
         return Some(MinerEvent::ShareAccepted);
     }
-    if l.contains("found block") || l.contains("contributed block") || l.contains("mined block") {
+    // STRICT: only celebrate on explicit success lines
+    // Acceptable phrases:
+    //  - "successfully mined and submitted a new block" (external miner path)
+    //  - "successfully mined block" (generic success)
+    if l.contains("successfully mined and submitted") || l.contains("successfully mined block") {
+        // try to capture the new block hash after the arrow first, then any 0x..., then fallback
+        let hash = capture_str(&l, r"→\s*(0x[0-9a-f]+)")
+            .or_else(|| capture_str(&l, r"(0x[0-9a-f]+)"))
+            .or_else(|| capture_str(&l, r"(?:hash|block)[ =:]+([0-9a-fx]+)"));
+        // height is sometimes not present in the success line; leave as None if not found
         let height = capture_u64(&l, r"height[ =:]+(\d+)");
-        let hash = capture_str(&l, r"(?:hash|block)[ =:]+([0-9a-fx]+)");
         return Some(MinerEvent::FoundBlock { height, hash });
     }
     if l.contains("error") || l.contains("failed") {

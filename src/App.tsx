@@ -275,7 +275,7 @@ export default function App() {
       ) {
         // Do not trigger celebrate(); briefly indicate MAYBE by setting Syncing (neutral) and a toast.
         setStatus((prev) => (prev === "Mining" ? prev : "Syncing"));
-        showToast("Block prepared – waiting for consensus…");
+        showToast("Block prepared – awaiting consensus…");
       }
 
       // Status inference:
