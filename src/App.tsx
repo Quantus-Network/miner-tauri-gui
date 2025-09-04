@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   ensureMinerAndAccount,
   startMiner,
@@ -21,6 +22,11 @@ export default function App() {
   const [minerPath, setMinerPath] = useState<string>("");
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
   const [toast, setToast] = useState<string>("");
+  const [status, setStatus] = useState<
+    "Idle" | "Starting" | "Syncing" | "Mining" | "Repairing" | "Error"
+  >("Idle");
+  const [lineLimit, setLineLimit] = useState<number>(400);
+  const lineLimitRef = useRef(lineLimit);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -35,16 +41,63 @@ export default function App() {
       setAccount(account); // shows ss58
     });
   }, []);
+  useEffect(() => {
+    lineLimitRef.current = lineLimit;
+    setLogs((prev) => {
+      const limit = Math.max(0, lineLimit);
+      if (limit > 0 && prev.length > limit) {
+        return prev.slice(-limit);
+      }
+      return prev;
+    });
+  }, [lineLimit]);
 
   useEffect(() => {
     const un1 = onMinerEvent((ev) => {
-      if (ev.type === "Hashrate") setHps(ev.hps);
-      if (ev.type === "FoundBlock") celebrate();
+      if (ev.type === "Hashrate") {
+        setHps(ev.hps);
+        if (ev.hps > 0) setStatus("Mining");
+      }
+      if (ev.type === "FoundBlock") {
+        celebrate();
+        setStatus("Mining");
+      }
     });
     const un2 = onMinerLog((line) => {
-      setLogs((prev) =>
-        (prev.length > 400 ? prev.slice(-400) : prev).concat(line),
-      );
+      // Parse "[source] message" format
+      const m = line.match(/^\[(\w+)\]\s*(.*)$/);
+      const source = (m?.[1] || "").toLowerCase();
+      const body = (m?.[2] || line).trim();
+      const l = body.toLowerCase();
+
+      // Status inference:
+      // - Repair loop messages from backend "ui" source
+      if (
+        source === "ui" &&
+        (l.includes("detected rocksdb corruption") ||
+          l.includes("repairing database") ||
+          l.includes("database wiped") ||
+          l.includes("repair restart"))
+      ) {
+        setStatus("Repairing");
+      } else if (source === "ui" && l.includes("repair complete")) {
+        // After repair, node restarts and will begin syncing
+        setStatus("Syncing");
+      } else if (
+        l.includes("importing block") ||
+        l.includes("total chain work")
+      ) {
+        setStatus("Syncing");
+      } else if (source === "stderr" && l.includes("error")) {
+        setStatus("Error");
+      }
+
+      setLogs((prev) => {
+        const limit = Math.max(0, lineLimitRef.current || 0);
+        const base =
+          limit > 0 && prev.length > limit ? prev.slice(-limit) : prev;
+        return base.concat(line);
+      });
     });
     return () => {
       un1.then((u) => u());
@@ -59,6 +112,7 @@ export default function App() {
       return;
     }
     try {
+      setStatus("Starting");
       await startMiner(c, account.address, minerPath, []);
       setMining(true);
     } catch (err: any) {
@@ -73,11 +127,28 @@ export default function App() {
     try {
       await stopMiner();
       setMining(false);
+      setStatus("Idle");
     } catch (err: any) {
       showToast(
         err?.message
           ? `Stop failed: ${err.message}`
           : `Stop failed: ${String(err)}`,
+      );
+    }
+  }
+
+  async function onRepair() {
+    setStatus("Repairing");
+    try {
+      await invoke("repair_miner");
+      showToast("Repair initiated. Node will restart and resync.");
+      // Status will transition to Syncing as logs come in; keep as Repairing for now.
+    } catch (err: any) {
+      setStatus("Error");
+      showToast(
+        err?.message
+          ? `Repair failed: ${err.message}`
+          : `Repair failed: ${String(err)}`,
       );
     }
   }
@@ -92,6 +163,24 @@ export default function App() {
 
   return (
     <div className="p-6 max-w-3xl mx-auto font-sans">
+      <div
+        className={`fixed top-4 right-4 z-40 rounded-full px-3 py-1 text-xs font-semibold shadow ${
+          status === "Mining"
+            ? "bg-green-600 text-white"
+            : status === "Syncing"
+              ? "bg-amber-500 text-black"
+              : status === "Starting"
+                ? "bg-blue-600 text-white"
+                : status === "Repairing"
+                  ? "bg-purple-600 text-white"
+                  : status === "Error"
+                    ? "bg-red-600 text-white"
+                    : "bg-gray-500 text-white"
+        }`}
+        title="Miner status"
+      >
+        {status}
+      </div>
       <h1 className="text-2xl font-bold mb-2">Quantus Miner (Demo)</h1>
       <p className="opacity-70 mb-6">
         Creates a local account and wraps the CLI miner.
@@ -148,6 +237,14 @@ export default function App() {
 
         <button
           className="rounded-xl px-3 py-2 border"
+          onClick={onRepair}
+          title="Stops the node, wipes the database, and restarts (full resync)"
+        >
+          Repair DB + Restart
+        </button>
+
+        <button
+          className="rounded-xl px-3 py-2 border"
           onClick={refreshBalance}
         >
           Refresh Balance
@@ -163,7 +260,19 @@ export default function App() {
       </div>
 
       <div className="rounded-2xl shadow p-4 border">
-        <div className="mb-2">Console</div>
+        <div className="mb-2 flex items-center gap-3">
+          <span>Console</span>
+          <span className="text-xs opacity-70">Lines</span>
+          <input
+            type="number"
+            className="border rounded px-2 py-1 w-24"
+            min={50}
+            max={5000}
+            step={50}
+            value={lineLimit}
+            onChange={(e) => setLineLimit(Number(e.target.value) || 0)}
+          />
+        </div>
         <pre className="h-48 overflow-auto text-xs leading-tight bg-black text-green-300 p-3 rounded-md">
           {logs.join("\n")}
         </pre>

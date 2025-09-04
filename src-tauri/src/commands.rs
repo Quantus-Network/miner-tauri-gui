@@ -128,3 +128,10 @@ pub async fn ensure_miner_and_account(app: AppHandle) -> Result<serde_json::Valu
       "accountJsonPath": acct_path.to_string_lossy(),
     }))
 }
+
+#[tauri::command]
+pub async fn repair_miner(app: AppHandle) -> Result<(), String> {
+    miner::repair_and_restart(app)
+        .await
+        .map_err(|e| e.to_string())
+}

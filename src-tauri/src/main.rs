@@ -9,7 +9,7 @@ mod parse;
 mod rpc;
 
 use commands::*;
-use tauri::{Manager, Runtime};
+use tauri::{LogicalSize, Manager, Runtime, Size};
 
 fn main() {
     tauri::Builder::default()
@@ -24,14 +24,24 @@ fn main() {
             read_log_tail,
             query_balance,
             select_chain,
+            repair_miner,
         ])
-        /*
         .setup(|app| {
-            // ensure app data dir exists
-            let _ = account::ensure_app_dir(&app.handle());
+            if let Some(win) = app.get_webview_window("main") {
+                // Try to size to 90% of the primary monitor; fallback to a large default.
+                if let Ok(Some(monitor)) = app.primary_monitor() {
+                    let size = monitor.size();
+                    let w = (size.width as f64 * 0.9).max(800.0);
+                    let h = (size.height as f64 * 0.9).max(600.0);
+                    let _ = win.set_size(Size::Logical(LogicalSize::new(w, h)));
+                    let _ = win.center();
+                } else {
+                    let _ = win.set_size(Size::Logical(LogicalSize::new(1728.0, 1080.0)));
+                    let _ = win.center();
+                }
+            }
             Ok(())
         })
-        */
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
