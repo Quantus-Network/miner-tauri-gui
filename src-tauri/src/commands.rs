@@ -3,23 +3,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::{
-    account::{generate_account_unencrypted, load_account, Account},
     miner::{self, MinerConfig},
     rpc,
 };
-
-#[tauri::command]
-pub async fn init_account(app: AppHandle) -> Result<Account, String> {
-    match load_account(&app) {
-        Ok(a) => Ok(a),
-        Err(_) => generate_account_unencrypted(&app).map_err(|e| e.to_string()),
-    }
-}
-
-#[tauri::command]
-pub async fn read_account(app: AppHandle) -> Result<Account, String> {
-    load_account(&app).map_err(|e| e.to_string())
-}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChainSelection {
@@ -38,6 +24,7 @@ pub async fn select_chain(_app: AppHandle, sel: ChainSelection) -> Result<(), St
 #[derive(Debug, Clone, Deserialize)]
 pub struct StartMinerArgs {
     pub chain: String,
+    pub rewards_address: String,
     pub binary_path: String,
     pub extra_args: Vec<String>,
 }
@@ -48,6 +35,7 @@ pub async fn start_miner(app: AppHandle, args: StartMinerArgs) -> Result<(), Str
         app,
         MinerConfig {
             chain: args.chain,
+            rewards_address: args.rewards_address,
             binary_path: args.binary_path,
             extra_args: args.extra_args,
         },
@@ -82,4 +70,21 @@ pub async fn query_balance(
     rpc::fetch_balance(ws, &address)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ensure_miner_and_account(app: AppHandle) -> Result<serde_json::Value, String> {
+    let miner_path = crate::installer::ensure_quantus_node_installed()
+        .await
+        .map_err(|e| e.to_string())?;
+    let acct_path = crate::account_path::account_json_path(&app);
+    let acct = crate::account_cli::ensure_account_json(&app, &miner_path, &acct_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+      "minerPath": miner_path.to_string_lossy(),
+      "account": acct,
+      "accountJsonPath": acct_path.to_string_lossy(),
+    }))
 }

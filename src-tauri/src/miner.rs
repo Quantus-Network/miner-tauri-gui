@@ -9,8 +9,15 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::account::account_path;
+use crate::account_cli::AccountJson;
+use crate::account_path::account_json_path;
 use crate::parse::{parse_event, MinerEvent};
+
+#[derive(Debug, Clone, Serialize)]
+struct LogMsg {
+    source: &'static str,
+    line: String,
+}
 
 lazy_static! {
     static ref MINER: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
@@ -19,6 +26,7 @@ lazy_static! {
 #[derive(Debug, Clone, Serialize)]
 pub struct MinerConfig {
     pub chain: String, // "resonance" | "heisenberg"
+    pub rewards_address: String,
     pub binary_path: String,
     pub extra_args: Vec<String>,
 }
@@ -27,16 +35,13 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     // ensure previous child is stopped
     stop().await.ok();
 
-    // TODO: choose flags your miner expects. Example layout:
-    //   --chain {resonance|heisenberg}
-    //   --account-file <path_to_mining-rewards-account.json>
-    //   --telemetry-url wss://tc0.res.fm/feed  (optional)
-    let acct = account_path(&app);
+    let acct_path = account_json_path(&app);
+    let acct = AccountJson::load_from_file(&acct_path)?;
     let mut args = vec![
         "--chain".into(),
         cfg.chain.clone(),
-        "--account-file".into(),
-        acct.to_string_lossy().to_string(),
+        "--rewards-address".into(),
+        acct.address.clone(),
     ];
     args.extend(cfg.extra_args.clone());
 
@@ -58,7 +63,13 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
             if let Some(ev) = parse_event(&line) {
                 let _ = app_clone.emit("miner:event", &ev);
             }
-            let _ = app_clone.emit("miner:log", &line);
+            let _ = app_clone.emit(
+                "miner:log",
+                &LogMsg {
+                    source: "stdout",
+                    line: line.clone(),
+                },
+            );
         }
     });
 
@@ -70,7 +81,13 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
             if let Some(ev) = parse_event(&line) {
                 let _ = app_clone.emit("miner:event", &ev);
             }
-            let _ = app_clone.emit("miner:log", &format!("[err] {line}"));
+            let _ = app_clone.emit(
+                "miner:log",
+                &LogMsg {
+                    source: "stderr",
+                    line,
+                },
+            );
         }
     });
 

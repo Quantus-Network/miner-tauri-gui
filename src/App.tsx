@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  initAccount,
+  ensureMinerAndAccount,
   startMiner,
   stopMiner,
   onMinerEvent,
@@ -18,10 +18,15 @@ export default function App() {
   const [hps, setHps] = useState<number>(0);
   const [mining, setMining] = useState(false);
   const [balance, setBalance] = useState<string>("—");
-  const binaryPathRef = useRef<HTMLInputElement>(null);
+  const [minerPath, setMinerPath] = useState<string>("");
+  const [accountJsonPath, setAccountJsonPath] = useState<string>("");
 
   useEffect(() => {
-    initAccount().then(setAccount);
+    ensureMinerAndAccount().then(({ minerPath, accountJsonPath, account }) => {
+      setMinerPath(minerPath);
+      setAccountJsonPath(accountJsonPath);
+      setAccount(account); // shows ss58
+    });
   }, []);
 
   useEffect(() => {
@@ -41,9 +46,9 @@ export default function App() {
   }, []);
 
   async function onStart() {
-    const path = binaryPathRef.current?.value || "";
-    if (!path) return alert("Select miner binary path");
-    await startMiner(chain === "quantus" ? "resonance" : chain, path, []);
+    const c = chain === "quantus" ? "resonance" : chain;
+    if (!account || !minerPath) return;
+    await startMiner(c, account.address, minerPath, []);
     setMining(true);
   }
   async function onStop() {
@@ -85,12 +90,22 @@ export default function App() {
           </option>
         </select>
 
-        <label className="ml-6">Miner binary</label>
-        <input
-          ref={binaryPathRef}
-          className="border rounded px-2 py-1 flex-1"
-          placeholder="/path/to/miner-binary"
-        />
+        <div className="ml-6 text-sm">
+          <div className="opacity-70">Binary</div>
+          <div className="font-mono break-all">
+            {minerPath || "installing…"}
+          </div>
+        </div>
+        <div className="text-sm">
+          <div className="opacity-70">Account JSON</div>
+          <div className="font-mono break-all">{accountJsonPath || "…"}</div>
+        </div>
+        <div className="text-sm">
+          <div className="opacity-70">Planned command</div>
+          <div className="font-mono break-all">
+            {`${minerPath} --chain ${chain === "quantus" ? "resonance" : chain} --rewards-address ${account?.address ?? ""}`}
+          </div>
+        </div>
 
         {!mining ? (
           <button className="rounded-xl px-3 py-2 border" onClick={onStart}>
@@ -119,8 +134,8 @@ export default function App() {
       </div>
 
       <div className="rounded-2xl shadow p-4 border">
-        <div className="mb-2">Logs</div>
-        <pre className="h-64 overflow-auto text-sm leading-snug bg-black/5 p-2 rounded">
+        <div className="mb-2">Console</div>
+        <pre className="h-48 overflow-auto text-xs leading-tight bg-black text-green-300 p-3 rounded-md">
           {logs.join("\n")}
         </pre>
       </div>
