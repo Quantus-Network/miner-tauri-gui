@@ -1,51 +1,129 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useRef, useState } from "react";
+import {
+  initAccount,
+  startMiner,
+  stopMiner,
+  onMinerEvent,
+  onMinerLog,
+  queryBalance,
+} from "./api";
+import { celebrate } from "./celebrate";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type Chain = "resonance" | "heisenberg" | "quantus";
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+export default function App() {
+  const [account, setAccount] = useState<any>(null);
+  const [chain, setChain] = useState<Chain>("resonance");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [hps, setHps] = useState<number>(0);
+  const [mining, setMining] = useState(false);
+  const [balance, setBalance] = useState<string>("—");
+  const binaryPathRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    initAccount().then(setAccount);
+  }, []);
+
+  useEffect(() => {
+    const un1 = onMinerEvent((ev) => {
+      if (ev.type === "Hashrate") setHps(ev.hps);
+      if (ev.type === "FoundBlock") celebrate();
+    });
+    const un2 = onMinerLog((line) => {
+      setLogs((prev) =>
+        (prev.length > 400 ? prev.slice(-400) : prev).concat(line),
+      );
+    });
+    return () => {
+      un1.then((u) => u());
+      un2.then((u) => u());
+    };
+  }, []);
+
+  async function onStart() {
+    const path = binaryPathRef.current?.value || "";
+    if (!path) return alert("Select miner binary path");
+    await startMiner(chain === "quantus" ? "resonance" : chain, path, []);
+    setMining(true);
+  }
+  async function onStop() {
+    await stopMiner();
+    setMining(false);
+  }
+
+  async function refreshBalance() {
+    if (!account) return;
+    // mainnet disabled; if picked, fall back to resonance
+    const c = chain === "quantus" ? "resonance" : chain;
+    const res: any = await queryBalance(c, account.address);
+    setBalance(res.free);
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="p-6 max-w-3xl mx-auto font-sans">
+      <h1 className="text-2xl font-bold mb-2">Quantus Miner (Demo)</h1>
+      <p className="opacity-70 mb-6">
+        Creates a local account and wraps the CLI miner.
+      </p>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <div className="rounded-2xl shadow p-4 mb-4 border">
+        <div className="mb-2">Account Address</div>
+        <div className="font-mono break-all">{account?.address ?? "…"}</div>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
+      <div className="rounded-2xl shadow p-4 mb-4 border flex gap-3 items-center">
+        <label>Chain</label>
+        <select
+          className="border rounded px-2 py-1"
+          value={chain}
+          onChange={(e) => setChain(e.target.value as Chain)}
+        >
+          <option value="resonance">Resonance (testnet)</option>
+          <option value="heisenberg">Heisenberg (testnet)</option>
+          <option value="quantus" disabled>
+            Quantus (mainnet – disabled)
+          </option>
+        </select>
+
+        <label className="ml-6">Miner binary</label>
         <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+          ref={binaryPathRef}
+          className="border rounded px-2 py-1 flex-1"
+          placeholder="/path/to/miner-binary"
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+
+        {!mining ? (
+          <button className="rounded-xl px-3 py-2 border" onClick={onStart}>
+            Start
+          </button>
+        ) : (
+          <button className="rounded-xl px-3 py-2 border" onClick={onStop}>
+            Stop
+          </button>
+        )}
+
+        <button
+          className="rounded-xl px-3 py-2 border"
+          onClick={refreshBalance}
+        >
+          Refresh Balance
+        </button>
+        <div className="ml-auto">
+          Hashrate: <b>{hps ? `${hps.toFixed(0)} H/s` : "—"}</b>
+        </div>
+      </div>
+
+      <div className="rounded-2xl shadow p-4 mb-4 border">
+        <div className="mb-2">Balance</div>
+        <div className="font-mono">{balance}</div>
+      </div>
+
+      <div className="rounded-2xl shadow p-4 border">
+        <div className="mb-2">Logs</div>
+        <pre className="h-64 overflow-auto text-sm leading-snug bg-black/5 p-2 rounded">
+          {logs.join("\n")}
+        </pre>
+      </div>
+    </div>
   );
 }
-
-export default App;
