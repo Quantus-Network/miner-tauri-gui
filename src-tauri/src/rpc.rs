@@ -18,17 +18,100 @@ pub fn local_ws_endpoint() -> &'static str {
     "ws://127.0.0.1:9944"
 }
 
-// Minimal shape to send to UI. Replace with real RPC later.
 #[derive(Debug, Clone, Serialize)]
 pub struct BalanceView {
     pub address: String,
-    pub free: String, // string for simplicity (e.g., "123.456 RES")
+    pub free: String,   // raw string value (chain units, e.g., plancks)
+    pub symbol: String, // e.g., "RES"
+    pub decimals: u32,  // e.g., 12
 }
 
-/// Stub balance fetcher.
-/// For now, the frontend passes a WS URL. Callers should prefer using
-/// `bootnode_ws_for_chain(chain)` and pass the returned URL when available.
+// Structure used to decode system_properties
+#[derive(Debug, Deserialize)]
+struct SystemProperties {
+    #[serde(default)]
+    tokenSymbol: Option<serde_json::Value>, // may be string or array
+    #[serde(default)]
+    tokenDecimals: Option<serde_json::Value>, // may be number or array
+}
+
+// Safe extractors for potential string/array forms
+fn extract_symbol(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(arr) => arr.get(0).and_then(|x| x.as_str()).map(|s| s.to_string()),
+        _ => None,
+    }
+}
+fn extract_decimals(v: &serde_json::Value) -> Option<u32> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().map(|x| x as u32),
+        serde_json::Value::Array(arr) => arr.get(0).and_then(|x| x.as_u64()).map(|x| x as u32),
+        _ => None,
+    }
+}
+
+/// Query local RPC for system properties (symbol/decimals)
+async fn fetch_local_chain_properties() -> (String, u32) {
+    #[derive(Deserialize)]
+    struct RpcResp {
+        result: Option<serde_json::Value>,
+    }
+
+    let client = match reqwest::Client::builder()
+        .user_agent("quantus-miner/0.1")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return ("".into(), 12),
+    };
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "system_properties",
+        "params": []
+    });
+
+    if let Ok(resp) = client
+        .post(local_ws_endpoint().replace("ws://", "http://"))
+        .json(&body)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        if let Ok(r) = resp.json::<RpcResp>().await {
+            if let Some(result) = r.result {
+                let props: SystemProperties =
+                    serde_json::from_value(result).unwrap_or(SystemProperties {
+                        tokenSymbol: None,
+                        tokenDecimals: None,
+                    });
+                let symbol = props
+                    .tokenSymbol
+                    .as_ref()
+                    .and_then(extract_symbol)
+                    .unwrap_or_else(|| "RES".to_string());
+                let decimals = props
+                    .tokenDecimals
+                    .as_ref()
+                    .and_then(extract_decimals)
+                    .unwrap_or(12);
+                return (symbol, decimals);
+            }
+        }
+    }
+
+    // Fallback defaults
+    ("RES".into(), 12)
+}
+
+/// Fetch balance using network-specific strategy.
+/// For Resonance testnet we use Subsquid GraphQL.
+/// For other chains we return "0" until endpoints exist.
 pub async fn fetch_balance(ws_url: &str, address: &str) -> Result<BalanceView> {
+    let (symbol, decimals) = fetch_local_chain_properties().await;
+
     // Resonance-only: use Subsquid GraphQL (https://gql.res.fm/graphql)
     if ws_url.contains("res.fm") {
         #[derive(Deserialize)]
@@ -73,6 +156,8 @@ pub async fn fetch_balance(ws_url: &str, address: &str) -> Result<BalanceView> {
         return Ok(BalanceView {
             address: address.to_string(),
             free,
+            symbol,
+            decimals,
         });
     }
 
@@ -80,5 +165,7 @@ pub async fn fetch_balance(ws_url: &str, address: &str) -> Result<BalanceView> {
     Ok(BalanceView {
         address: address.to_string(),
         free: "0".into(),
+        symbol,
+        decimals,
     })
 }

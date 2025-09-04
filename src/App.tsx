@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   ensureMinerAndAccount,
   startMiner,
@@ -36,6 +35,8 @@ export default function App() {
   const [hps, setHps] = useState<number>(0);
   const [mining, setMining] = useState(false);
   const [balance, setBalance] = useState<string>("—");
+  const [balanceSymbol, setBalanceSymbol] = useState<string>("RES");
+  const [balanceDecimals, setBalanceDecimals] = useState<number>(12);
   const [minerPath, setMinerPath] = useState<string>("");
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
   const [toast, setToast] = useState<string>("");
@@ -167,6 +168,18 @@ export default function App() {
         celebrate();
         setStatus("Mining");
         setSyncBlock(null);
+        // Refresh balance after a found block (may reflect new rewards)
+        if (account) {
+          const c = chain === "quantus" ? "resonance" : chain;
+          queryBalance(c, account.address).then((res: any) => {
+            if (res && typeof res.free === "string") {
+              setBalance(res.free);
+              if (typeof res.symbol === "string") setBalanceSymbol(res.symbol);
+              if (typeof res.decimals === "number")
+                setBalanceDecimals(res.decimals);
+            }
+          });
+        }
       }
       // If we later add a "PreparedBlock" event (pre-proposal), only show a subtle "Maybe" signal.
       // For now this is a no-op until backend emits such an event.
@@ -247,9 +260,6 @@ export default function App() {
         }
         if (typeof s.bootnode_host === "string") {
           setBootnodeHost(s.bootnode_host);
-        }
-        if (typeof (s as any).bootnode_stale_secs === "number") {
-          setBootnodeStaleSecs((s as any).bootnode_stale_secs as number);
         }
       },
     );
@@ -356,13 +366,40 @@ export default function App() {
     // mainnet disabled; if picked, fall back to resonance
     const c = chain === "quantus" ? "resonance" : chain;
     const res: any = await queryBalance(c, account.address);
-    setBalance(res.free);
+    if (res && typeof res.free === "string") {
+      setBalance(res.free);
+      if (typeof res.symbol === "string") setBalanceSymbol(res.symbol);
+      if (typeof res.decimals === "number") setBalanceDecimals(res.decimals);
+    }
   }
 
   const progressPct =
     typeof best === "number" && typeof highest === "number" && highest > 0
       ? Math.max(0, Math.min(100, Math.floor((best / highest) * 100)))
       : 0;
+
+  // auto-refresh balance while mining
+  useEffect(() => {
+    let timer: number | undefined;
+    if (mining && account) {
+      const c = chain === "quantus" ? "resonance" : chain;
+      const tick = async () => {
+        const res: any = await queryBalance(c, account.address);
+        if (res && typeof res.free === "string") {
+          setBalance(res.free);
+          if (typeof res.symbol === "string") setBalanceSymbol(res.symbol);
+          if (typeof res.decimals === "number")
+            setBalanceDecimals(res.decimals);
+        }
+      };
+      // refresh immediately, then every 60s
+      tick();
+      timer = window.setInterval(tick, 60_000) as unknown as number;
+    }
+    return () => {
+      if (timer) window.clearInterval(timer);
+    };
+  }, [mining, chain, account?.address]);
 
   return (
     <div className="p-6 max-w-6xl mx-auto font-sans">
@@ -509,6 +546,12 @@ export default function App() {
           {logFilePath ? (
             <>
               <span className="text-xs opacity-70">Log:</span>
+              <span
+                className="text-xs font-mono max-w-[22rem] truncate"
+                title={logFilePath}
+              >
+                {logFilePath}
+              </span>
               <button
                 className="rounded px-2 py-1 border text-xs"
                 title={logFilePath}
