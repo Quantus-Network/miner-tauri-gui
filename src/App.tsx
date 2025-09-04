@@ -59,7 +59,40 @@ export default function App() {
   const [autoStart, setAutoStart] = useState<boolean>(
     () => localStorage.getItem("qm.autoStart") === "1",
   );
+  type ThemeMode = "system" | "light" | "dark";
+  const [theme, setTheme] = useState<ThemeMode>(
+    () => (localStorage.getItem("qm.theme") as ThemeMode) || "system",
+  );
   const lineLimitRef = useRef(lineLimit);
+  useEffect(() => {
+    const apply = (mode: ThemeMode) => {
+      const root = document.documentElement;
+      if (mode === "dark") {
+        root.classList.add("dark");
+      } else if (mode === "light") {
+        root.classList.remove("dark");
+      } else {
+        const mql = window.matchMedia("(prefers-color-scheme: dark)");
+        if (mql.matches) root.classList.add("dark");
+        else root.classList.remove("dark");
+      }
+    };
+    apply(theme);
+    try {
+      localStorage.setItem("qm.theme", theme);
+    } catch {}
+    if (theme === "system") {
+      const mql = window.matchMedia("(prefers-color-scheme: dark)");
+      const handler = () => apply("system");
+      if (mql.addEventListener) mql.addEventListener("change", handler);
+      else mql.addListener(handler);
+      return () => {
+        if (mql.removeEventListener) mql.removeEventListener("change", handler);
+        else mql.removeListener(handler);
+      };
+    }
+    return;
+  }, [theme]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -112,10 +145,13 @@ export default function App() {
         }
       }
       if (ev.type === "FoundBlock") {
+        // A block was actually accepted (strong signal) – celebrate.
         celebrate();
         setStatus("Mining");
         setSyncBlock(null);
       }
+      // If we later add a "PreparedBlock" event (pre-proposal), only show a subtle "Maybe" signal.
+      // For now this is a no-op until backend emits such an event.
     });
     const un2 = onMinerLog((line) => {
       // Parse "[source] message" format
@@ -123,6 +159,19 @@ export default function App() {
       const source = (m?.[1] || "").toLowerCase();
       const body = (m?.[2] || line).trim();
       const l = body.toLowerCase();
+
+      // Tone down celebration for prepared blocks: show a soft "Maybe" status.
+      // Typical substrate-ish logs: "prepared a block for proposing", "block proposal prepared", etc.
+      if (
+        l.includes("prepared a block for proposing") ||
+        l.includes("block proposal prepared") ||
+        l.includes("prepared block") ||
+        l.includes("pre-proposing block")
+      ) {
+        // Do not trigger celebrate(); briefly indicate MAYBE by setting Syncing (neutral) and a toast.
+        setStatus((prev) => (prev === "Mining" ? prev : "Syncing"));
+        showToast("Block prepared (maybe) – waiting for acceptance…");
+      }
 
       // Status inference:
       // - Repair loop messages from backend "ui" source
@@ -323,6 +372,18 @@ export default function App() {
             />
             Auto-start
           </label>
+          <select
+            className="ml-2 border rounded px-2 py-1 text-xs"
+            value={theme}
+            onChange={(e) =>
+              setTheme(e.target.value as "system" | "light" | "dark")
+            }
+            title="Theme"
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
         </div>
         <div
           className="w-80 h-2 rounded bg-black/20 overflow-hidden"

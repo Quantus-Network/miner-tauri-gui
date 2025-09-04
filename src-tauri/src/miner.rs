@@ -622,32 +622,45 @@ fn spawn_status_task(app: AppHandle) {
                 }
             }
 
-            // Periodically refresh highest height via bootnode to improve progress accuracy
+            // Subscribe to bootnode heads to improve progress accuracy
             if tick % 10 == 0 {
                 if let Some(chain_name) =
                     { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) }
                 {
                     if let Some(url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
                         if let Ok((mut ws_b, _)) = tokio_tungstenite::connect_async(url).await {
+                            // Start a short-lived subscription to new heads and read one notification.
                             let req = serde_json::json!({
-                                "jsonrpc":"2.0","id":42,"method":"system_syncState","params":[]
+                                "jsonrpc":"2.0","id":4242,"method":"chain_subscribeNewHeads","params":[]
                             });
                             let _ = ws_b.send(Message::Text(req.to_string())).await;
-                            if let Ok(Some(Ok(Message::Text(txt)))) =
-                                tokio::time::timeout(Duration::from_millis(900), ws_b.next()).await
+
+                            // First response is usually the subscription id; read it (best-effort).
+                            if let Ok(Some(Ok(Message::Text(_txt1)))) =
+                                tokio::time::timeout(Duration::from_millis(600), ws_b.next()).await
                             {
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
-                                    if let Some(res) = val.get("result") {
-                                        if let Some(h) =
-                                            res.get("highestBlock").and_then(parse_u64_from_json)
+                                // Then read the first head notification.
+                                if let Ok(Some(Ok(Message::Text(txt2)))) =
+                                    tokio::time::timeout(Duration::from_millis(900), ws_b.next())
+                                        .await
+                                {
+                                    if let Ok(val) =
+                                        serde_json::from_str::<serde_json::Value>(&txt2)
+                                    {
+                                        if let Some(head) =
+                                            val.get("params").and_then(|p| p.get("result"))
                                         {
-                                            let new_h = match highest {
-                                                Some(x) => Some(x.max(h)),
-                                                None => Some(h),
-                                            };
-                                            if new_h != highest {
-                                                highest = new_h;
-                                                got_update = true;
+                                            if let Some(num) =
+                                                head.get("number").and_then(parse_u64_from_json)
+                                            {
+                                                let new_h = match highest {
+                                                    Some(x) => Some(x.max(num)),
+                                                    None => Some(num),
+                                                };
+                                                if new_h != highest {
+                                                    highest = new_h;
+                                                    got_update = true;
+                                                }
                                             }
                                         }
                                     }
