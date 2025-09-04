@@ -2892,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "quantus-miner"
-version = "0.1.1-beta.2"
+version = "0.1.1-beta.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

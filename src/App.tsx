@@ -345,7 +345,7 @@ export default function App() {
         <div className="font-mono break-all">{account?.address ?? "…"}</div>
       </div>
 
-      <div className="rounded-2xl shadow p-4 mb-4 border flex gap-3 items-center">
+      <div className="rounded-2xl shadow p-4 mb-4 border flex flex-wrap gap-3 items-start">
         <label>Chain</label>
         <select
           className="border rounded px-2 py-1"
@@ -368,20 +368,69 @@ export default function App() {
           </option>
         </select>
 
-        <div className="ml-6 text-sm">
-          <div className="opacity-70">Binary</div>
-          <div className="font-mono break-all">
+        <div className="basis-full text-sm">
+          <div className="opacity-70 flex items-center gap-2">
+            <span>Binary</span>
+            <button
+              className="rounded px-2 py-0.5 border text-xs"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(minerPath || "");
+                  showToast("Copied");
+                } catch {}
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="font-mono break-all whitespace-pre-wrap">
             {minerPath || "installing…"}
           </div>
         </div>
-        <div className="text-sm">
-          <div className="opacity-70">Account JSON</div>
-          <div className="font-mono break-all">{accountJsonPath || "…"}</div>
+        <div className="basis-full text-sm">
+          <div className="opacity-70 flex items-center gap-2">
+            <span>Account JSON</span>
+            <button
+              className="rounded px-2 py-0.5 border text-xs"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(accountJsonPath || "");
+                  showToast("Copied");
+                } catch {}
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="font-mono break-all whitespace-pre-wrap">
+            {accountJsonPath || "…"}
+          </div>
         </div>
-        <div className="text-sm">
-          <div className="opacity-70">Planned command</div>
-          <div className="font-mono break-all">
-            {`${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`}
+        <div className="basis-full text-sm">
+          <div className="opacity-70 flex items-center gap-2">
+            <span>Planned command</span>
+            <button
+              className="rounded px-2 py-0.5 border text-xs"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(
+                    `${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`,
+                  );
+                  showToast("Copied");
+                } catch {}
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="font-mono break-all whitespace-pre-wrap">
+            {`${minerPath} --chain ${
+              chain === "quantus"
+                ? "live_resonance"
+                : chain === "resonance"
+                  ? "live_resonance"
+                  : chain
+            } --rewards-address ${account?.address ?? ""}`}
           </div>
         </div>
 
