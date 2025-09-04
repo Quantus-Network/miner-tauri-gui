@@ -61,3 +61,4 @@ tempfile = "3"
 zip = { version = "0.6", default-features = false, features = [
     "deflate",
 ] } # for Windows .zip
+num_cpus = "1"

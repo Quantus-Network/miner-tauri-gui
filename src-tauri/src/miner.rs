@@ -177,6 +177,8 @@ fn update_meta_from_line(meta: &mut MinerMeta, line: &str) -> bool {
 
 lazy_static! {
     static ref MINER: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
+    // external parallel miner handle; if running, we stop it on shutdown
+    static ref EXT_MINER: Mutex<Option<crate::installer::ExternalMinerHandle>> = Mutex::new(None);
     static ref LAST_CFG: Mutex<Option<MinerConfig>> = Mutex::new(None);
     static ref REPAIRING: Mutex<bool> = Mutex::new(false);
     // When true, we are currently running with '--max-blocks-per-request 1'
@@ -344,6 +346,9 @@ pub struct MinerConfig {
     pub binary_path: String,
     pub extra_args: Vec<String>,
     pub log_to_file: bool,
+    // external parallel miner settings
+    pub external_num_cores: Option<usize>, // 1..(available-cores-1)
+    pub external_port: Option<u16>,        // e.g., 9833
 }
 
 pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
@@ -399,6 +404,17 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
 
     let bin_path = cfg.binary_path.clone();
     let mut cmd = Command::new(&bin_path);
+
+    // Emit planned command for UI (binary + args), matching what we will actually run.
+    // We haven't pushed args into `cmd` yet, so emit using the args vector we built.
+    let _ = app.emit(
+        "miner:log",
+        &LogMsg {
+            source: "ui",
+            line: format!("Planned command: {} {}", bin_path, args.join(" ")),
+        },
+    );
+
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -408,6 +424,42 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
+
+    // spawn external parallel miner if requested
+    if let (Some(cores), Some(port)) = (cfg.external_num_cores, cfg.external_port) {
+        // clamp cores to sane range: 1..(available-1)
+        let max_cores = num_cpus::get().saturating_sub(1).max(1);
+        let want_cores = cores.min(max_cores).max(1);
+        let _ = app.emit(
+            "miner:log",
+            &LogMsg {
+                source: "ui",
+                line: format!(
+                    "Starting external miner with --num-cores {} on port {}",
+                    want_cores, port
+                ),
+            },
+        );
+        match crate::installer::spawn_external_miner(crate::installer::ExternalMinerConfig {
+            num_cores: want_cores,
+            port,
+        })
+        .await
+        {
+            Ok(handle) => {
+                *EXT_MINER.lock().await = Some(handle);
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "miner:log",
+                    &LogMsg {
+                        source: "ui",
+                        line: format!("Failed to start external miner: {e}"),
+                    },
+                );
+            }
+        }
+    }
 
     // Prepare optional file logger
     let mut log_file: Option<std::fs::File> = None;
@@ -963,6 +1015,13 @@ pub async fn stop() -> Result<()> {
         // best-effort fire before actually killing
         // we don't have AppHandle here, so we can't emit; state will be confirmed on next start
     }
+    // stop external miner first if running
+    if let Some(mut ext) = EXT_MINER.lock().await.take() {
+        eprintln!("ui: Stopping external miner on port {}", ext.port);
+        // attempt graceful kill
+        let _ = ext.child.kill().await;
+    }
+
     if let Some(mut child) = MINER.lock().await.take() {
         #[cfg(target_family = "unix")]
         {
@@ -1074,6 +1133,8 @@ async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
     );
     Ok(())
 }
+
+// small helper for emitting logs from async contexts
 
 fn has_max_blocks_arg(args: &Vec<String>) -> bool {
     let mut i = 0;

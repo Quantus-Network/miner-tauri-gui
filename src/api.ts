@@ -73,12 +73,18 @@ export function onMinerMeta(cb: (m: MinerMeta) => void) {
   return listen<MinerMeta>("miner:meta", (e) => cb(e.payload));
 }
 
+export function onMinerLogFile(cb: (path: string) => void) {
+  return listen<{ path: string }>("miner:logfile", (e) => cb(e.payload.path));
+}
+
 export async function startMiner(
   chain: "resonance" | "heisenberg",
   rewardsAddress: string,
   binaryPath: string,
   extraArgs: string[] = [],
   logToFile: boolean = false,
+  externalNumCores?: number,
+  externalPort?: number,
 ) {
   try {
     return await invoke("start_miner", {
@@ -88,6 +94,8 @@ export async function startMiner(
         binary_path: binaryPath,
         extra_args: extraArgs,
         log_to_file: logToFile,
+        external_num_cores: externalNumCores,
+        external_port: externalPort,
       },
     });
   } catch (err) {

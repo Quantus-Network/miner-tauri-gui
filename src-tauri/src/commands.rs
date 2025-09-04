@@ -29,6 +29,11 @@ pub struct StartMinerArgs {
     pub extra_args: Vec<String>,
     #[serde(default)]
     pub log_to_file: bool,
+    // external parallel miner settings (optional)
+    #[serde(default)]
+    pub external_num_cores: Option<usize>,
+    #[serde(default)]
+    pub external_port: Option<u16>,
 }
 
 #[tauri::command]
@@ -59,6 +64,8 @@ pub async fn start_miner(app: AppHandle, args: StartMinerArgs) -> Result<(), Str
             binary_path: args.binary_path,
             extra_args: args.extra_args,
             log_to_file: args.log_to_file,
+            external_num_cores: args.external_num_cores,
+            external_port: args.external_port,
         },
     )
     .await

@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Stdio,
 };
+use tokio::process::Command;
 
 pub fn user_bin_dir() -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
@@ -43,6 +45,20 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalMinerConfig {
+    pub num_cores: usize,
+    pub port: u16,
+}
+
+#[derive(Debug)]
+pub struct ExternalMinerHandle {
+    pub binary_path: PathBuf,
+    pub port: u16,
+    pub num_cores: usize,
+    pub child: tokio::process::Child,
 }
 
 #[derive(Debug)]
@@ -145,6 +161,152 @@ pub async fn ensure_quantus_node_installed() -> Result<PathBuf> {
     }
 
     Ok(dest)
+}
+
+/// External miner
+
+fn miner_exe_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "quantus-miner.exe"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "quantus-miner"
+    }
+}
+
+fn miner_target() -> Target {
+    #[cfg(target_os = "linux")]
+    {
+        Target {
+            os_tag: "unknown-linux-gnu",
+            arch_tag: "x86_64",
+            ext: ".tar.gz",
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if cfg!(target_arch = "aarch64") {
+            Target {
+                os_tag: "apple-darwin",
+                arch_tag: "aarch64",
+                ext: ".tar.gz",
+            }
+        } else {
+            Target {
+                os_tag: "apple-darwin",
+                arch_tag: "x86_64",
+                ext: ".tar.gz",
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Target {
+            os_tag: "pc-windows-msvc",
+            arch_tag: "x86_64",
+            ext: ".zip",
+        }
+    }
+}
+
+/// Ensure external parallel miner is installed (downloads from GitHub releases)
+pub async fn ensure_external_miner_installed() -> Result<PathBuf> {
+    let bin_dir = user_bin_dir()?;
+    let dest = bin_dir.join(miner_exe_name());
+    if dest.exists() {
+        return Ok(dest);
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("quantus-miner/0.1")
+        .build()?;
+    // fetch latest release (same mechanism as quantus-node)
+    let rel: Release = client
+        .get("https://api.github.com/repos/Quantus-Network/quantus-miner/releases/latest")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let tgt = miner_target();
+    let wanted_prefix = format!(
+        "quantus-miner-{}-{}-{}",
+        rel.tag_name, tgt.arch_tag, tgt.os_tag
+    );
+    let asset = rel
+        .assets
+        .iter()
+        .find(|a| a.name.starts_with(&wanted_prefix) && a.name.ends_with(tgt.ext))
+        .ok_or_else(|| {
+            anyhow!(
+                "no external miner asset for target: {wanted_prefix}{}",
+                tgt.ext
+            )
+        })?;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("quantus-miner-")
+        .tempdir()?;
+    let archive_path = tmp.path().join(&asset.name);
+
+    let mut resp = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut file = tokio::fs::File::create(&archive_path).await?;
+    use tokio::io::AsyncWriteExt;
+    while let Some(chunk) = resp.chunk().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+
+    if tgt.ext == ".tar.gz" {
+        extract_tar_gz(&archive_path, &bin_dir)?;
+    } else {
+        extract_zip(&archive_path, &bin_dir)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&dest) {
+            let mut p = meta.permissions();
+            p.set_mode(0o755);
+            let _ = fs::set_permissions(&dest, p);
+        }
+    }
+
+    Ok(dest)
+}
+
+/// Spawn the external miner with provided config and return a handle
+pub async fn spawn_external_miner(cfg: ExternalMinerConfig) -> Result<ExternalMinerHandle> {
+    let bin = ensure_external_miner_installed().await?;
+    let mut args: Vec<String> = vec![
+        "--num-cores".into(),
+        cfg.num_cores.to_string(),
+        "--port".into(),
+        cfg.port.to_string(),
+    ];
+
+    let mut cmd = Command::new(&bin);
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = cmd.spawn()?;
+
+    Ok(ExternalMinerHandle {
+        binary_path: bin,
+        port: cfg.port,
+        num_cores: cfg.num_cores,
+        child,
+    })
 }
 
 fn exe_name() -> &'static str {

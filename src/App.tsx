@@ -9,6 +9,7 @@ import {
   onMinerStatus,
   onMinerMeta,
   onMinerState,
+  onMinerLogFile,
   type MinerStatus,
   type MinerMeta,
 } from "./api";
@@ -37,12 +38,48 @@ export default function App() {
   const [balance, setBalance] = useState<string>("—");
   const [balanceSymbol, setBalanceSymbol] = useState<string>("RES");
   const [balanceDecimals, setBalanceDecimals] = useState<number>(12);
+
+  // format on-chain integer balance into human-friendly string with symbol
+  function formatBalanceRaw(
+    raw: string | null,
+    decimals: number,
+    symbol: string,
+  ): string {
+    if (!raw || raw === "—") return "—";
+    try {
+      const num = BigInt(raw);
+      const d = BigInt(10) ** BigInt(decimals);
+      const whole = num / d;
+      const frac = (num % d).toString().padStart(decimals, "0");
+      // trim trailing zeros on fractional part
+      const fracTrimmed = frac.replace(/0+$/, "");
+      return fracTrimmed.length > 0
+        ? `${whole.toString()}.${fracTrimmed} ${symbol}`
+        : `${whole.toString()} ${symbol}`;
+    } catch {
+      return `${raw} ${symbol}`;
+    }
+  }
   const [minerPath, setMinerPath] = useState<string>("");
+  const [plannedCmd, setPlannedCmd] = useState<string>("");
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
   const [toast, setToast] = useState<string>("");
   const [status, setStatus] = useState<
     "Idle" | "Starting" | "Syncing" | "Mining" | "Repairing" | "Error"
   >("Idle");
+  // External miner controls (persisted)
+  const [useExternalMiner, setUseExternalMiner] = useState<boolean>(
+    () => localStorage.getItem("qm.ext.enable") === "1",
+  );
+  const [externalCores, setExternalCores] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem("qm.ext.cores") || "", 10);
+    const max = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
+    return Number.isFinite(v) && v >= 1 && v <= max ? v : max;
+  });
+  const [externalPort, setExternalPort] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem("qm.ext.port") || "", 10);
+    return Number.isFinite(v) && v >= 1024 && v <= 65535 ? v : 9833;
+  });
   const [syncBlock, setSyncBlock] = useState<number | null>(null);
   const [peers, setPeers] = useState<number | null>(null);
   const [best, setBest] = useState<number | null>(null);
@@ -67,8 +104,11 @@ export default function App() {
     const v = parseInt(localStorage.getItem("qm.lineLimit") || "", 10);
     return Number.isFinite(v) && v > 0 ? v : 400;
   });
-  // simple derived display for balance pill
-  const balanceDisplay = balance && balance !== "—" ? balance : null;
+  // simple derived display for balance pill (formatted)
+  const balanceDisplay =
+    balance && balance !== "—"
+      ? formatBalanceRaw(balance, balanceDecimals, balanceSymbol)
+      : null;
   const [autoStart, setAutoStart] = useState<boolean>(
     () => localStorage.getItem("qm.autoStart") === "1",
   );
@@ -133,7 +173,30 @@ export default function App() {
           try {
             setStatus("Starting");
             setSyncBlock(null);
-            await startMiner(c, account.address, minerPath, [], logToFile);
+            const extraArgs: string[] = [];
+            if (useExternalMiner && externalPort) {
+              extraArgs.push(
+                "--external-miner-url",
+                `http://127.0.0.1:${externalPort}`,
+              );
+            }
+            await startMiner(
+              c,
+              account.address,
+              minerPath,
+              extraArgs,
+              logToFile,
+              useExternalMiner
+                ? Math.max(
+                    1,
+                    Math.min(
+                      externalCores,
+                      Math.max(1, (navigator.hardwareConcurrency || 2) - 1),
+                    ),
+                  )
+                : undefined,
+              useExternalMiner ? externalPort : undefined,
+            );
             setMining(true);
           } catch {
             // error visibility handled by existing toast/log logic
@@ -177,6 +240,13 @@ export default function App() {
               if (typeof res.symbol === "string") setBalanceSymbol(res.symbol);
               if (typeof res.decimals === "number")
                 setBalanceDecimals(res.decimals);
+              // show formatted balance in a toast on reward detection
+              const formatted = formatBalanceRaw(
+                res.free,
+                res.decimals ?? balanceDecimals,
+                res.symbol ?? balanceSymbol,
+              );
+              showToast(`Balance updated: ${formatted}`);
             }
           });
         }
@@ -185,6 +255,11 @@ export default function App() {
       // For now this is a no-op until backend emits such an event.
     });
     const un2 = onMinerLog((line) => {
+      // capture planned command emitted by backend
+      if (line.startsWith("Planned command: ")) {
+        const cmd = line.slice("Planned command: ".length);
+        setPlannedCmd(cmd);
+      }
       const l = line.toLowerCase();
 
       // Tone down celebration for prepared blocks: show a soft "Maybe" status.
@@ -271,14 +346,13 @@ export default function App() {
         } catch {}
         return merged;
       });
-      // capture logfile path if backend emitted it via miner:logfile
-      if ((m as any)?.path) {
-        const p = (m as any).path as string;
-        setLogFilePath(p);
-        try {
-          localStorage.setItem("qm.logFilePath", p);
-        } catch {}
-      }
+    });
+    // subscribe to miner:logfile to capture file path when logging starts
+    const un6 = onMinerLogFile((path: string) => {
+      setLogFilePath(path);
+      try {
+        localStorage.setItem("qm.logFilePath", path);
+      } catch {}
     });
     const un5 = onMinerState((s) => {
       if (typeof s.running === "boolean") {
@@ -301,7 +375,7 @@ export default function App() {
       un2.then((u) => u());
       un3.then((u) => u());
       un4.then((u) => u());
-      un5.then((u) => u());
+      un6.then((u) => u());
     };
   }, []);
 
@@ -314,7 +388,31 @@ export default function App() {
     try {
       setStatus("Starting");
       setSyncBlock(null);
-      await startMiner(c, account.address, minerPath, []);
+      const extraArgs: string[] = [];
+      // If using external miner, add external miner URL arg to quantus-node
+      if (useExternalMiner && externalPort) {
+        extraArgs.push(
+          "--external-miner-url",
+          `http://127.0.0.1:${externalPort}`,
+        );
+      }
+      await startMiner(
+        c,
+        account.address,
+        minerPath,
+        extraArgs,
+        logToFile, // pass actual toggle value so backend writes a file
+        useExternalMiner
+          ? Math.max(
+              1,
+              Math.min(
+                externalCores,
+                Math.max(1, (navigator.hardwareConcurrency || 2) - 1),
+              ),
+            )
+          : undefined,
+        useExternalMiner ? externalPort : undefined,
+      );
       setMining(true);
       try {
         localStorage.setItem("qm.wasMining", "1");
@@ -520,7 +618,10 @@ export default function App() {
           </select>
         </div>
         {balanceDisplay && (
-          <div className="pill bg-black/80 text-white" title="Balance">
+          <div
+            className="pill bg-black/80 text-white"
+            title={`Balance (${balanceSymbol}, ${balanceDecimals}dp)`}
+          >
             Balance: {balanceDisplay}
           </div>
         )}
@@ -560,7 +661,9 @@ export default function App() {
                 Open
               </button>
             </>
-          ) : null}
+          ) : (
+            <span className="text-xs opacity-50">Log: (not active)</span>
+          )}
         </div>
         <div
           className="w-80 h-2 rounded bg-black/20 overflow-hidden"
@@ -815,14 +918,90 @@ export default function App() {
             </div>
           </div>
           <div className="basis-full text-sm">
+            {/* External miner controls */}
             <div className="opacity-70 flex items-center gap-2">
+              <span>External miner</span>
+              <label className="text-xs flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  className="accent-blue-600"
+                  checked={useExternalMiner}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setUseExternalMiner(v);
+                    try {
+                      localStorage.setItem("qm.ext.enable", v ? "1" : "0");
+                    } catch {}
+                  }}
+                />
+                Enable
+              </label>
+              <label className="text-xs flex items-center gap-1">
+                Cores
+                <input
+                  type="number"
+                  min={1}
+                  max={Math.max(1, (navigator.hardwareConcurrency || 2) - 1)}
+                  value={externalCores}
+                  onChange={(e) => {
+                    const max = Math.max(
+                      1,
+                      (navigator.hardwareConcurrency || 2) - 1,
+                    );
+                    const v = Math.max(
+                      1,
+                      Math.min(Number(e.target.value) || 1, max),
+                    );
+                    setExternalCores(v);
+                    try {
+                      localStorage.setItem("qm.ext.cores", String(v));
+                    } catch {}
+                  }}
+                  className="border rounded px-2 py-1 w-20"
+                  disabled={!useExternalMiner}
+                />
+              </label>
+              <label className="text-xs flex items-center gap-1">
+                Port
+                <input
+                  type="number"
+                  min={1024}
+                  max={65535}
+                  value={externalPort}
+                  onChange={(e) => {
+                    const v = Math.max(
+                      1024,
+                      Math.min(Number(e.target.value) || 9833, 65535),
+                    );
+                    setExternalPort(v);
+                    try {
+                      localStorage.setItem("qm.ext.port", String(v));
+                    } catch {}
+                  }}
+                  className="border rounded px-2 py-1 w-24"
+                  disabled={!useExternalMiner}
+                />
+              </label>
+            </div>
+            <div className="opacity-70 flex items-center gap-2 mt-2">
               <span>Planned command</span>
               <button
                 className="rounded px-2 py-0.5 border text-xs"
                 onClick={() => {
                   try {
                     navigator.clipboard.writeText(
-                      `${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`,
+                      plannedCmd ||
+                        `${minerPath} --chain ${
+                          chain === "quantus"
+                            ? "live_resonance"
+                            : chain === "resonance"
+                              ? "live_resonance"
+                              : chain
+                        } --rewards-address ${account?.address ?? ""}${
+                          useExternalMiner && externalPort
+                            ? ` --external-miner-url http://127.0.0.1:${externalPort}`
+                            : ""
+                        }`,
                     );
                     showToast("Copied");
                   } catch {}
@@ -830,15 +1009,20 @@ export default function App() {
               >
                 Copy
               </button>
-            </div>
-            <div className="font-mono break-all whitespace-pre-wrap">
-              {`${minerPath} --chain ${
-                chain === "quantus"
-                  ? "live_resonance"
-                  : chain === "resonance"
-                    ? "live_resonance"
-                    : chain
-              } --rewards-address ${account?.address ?? ""}`}
+              <div className="font-mono break-all whitespace-pre-wrap">
+                {plannedCmd ||
+                  `${minerPath} --chain ${
+                    chain === "quantus"
+                      ? "live_resonance"
+                      : chain === "resonance"
+                        ? "live_resonance"
+                        : chain
+                  } --rewards-address ${account?.address ?? ""}${
+                    useExternalMiner && externalPort
+                      ? ` --external-miner-url http://127.0.0.1:${externalPort}`
+                      : ""
+                  }`}
+              </div>
             </div>
           </div>
 
