@@ -49,7 +49,11 @@ jobs:
       - name: Bump src-tauri/tauri.conf.json
         run: |
           V="${{ steps.semver.outputs.version }}"
-          jq --arg v "$V" '.package.version=$v' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          jq --arg v "$V" '
+            (.version        |= $v) |
+            ( .package       |= (. // {})) |
+            (.package.version|= $v)
+          ' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
           mv /tmp/tauri.conf.json src-tauri/tauri.conf.json
 
       - name: Bump src-tauri/Cargo.toml
