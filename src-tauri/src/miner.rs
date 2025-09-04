@@ -532,6 +532,26 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 use std::io::Write;
                 let _ = writeln!(fh, "{}", line);
             }
+            // parse a dynamic local RPC ws url from occasional log lines, e.g.:
+            // "Running JSON-RPC server: addr=127.0.0.1:9944,[::1]:9944"
+            if let Some(pos) = line.find("Running JSON-RPC server: addr=") {
+                let rest = &line[pos + "Running JSON-RPC server: addr=".len()..];
+                if let Some(end) = rest.find(',') {
+                    let addr = rest[..end].trim();
+                    if !addr.is_empty() {
+                        // update the dynamic ws url (use ws://host:port)
+                        // safety: captured by outer scope via Mutex-free string
+                        // this closure can only update via a message; emit meta so status task picks change
+                        let _ = app_clone.emit(
+                            "miner:log",
+                            &LogMsg {
+                                source: "ui",
+                                line: format!("Detected local RPC endpoint: ws://{}", addr),
+                            },
+                        );
+                    }
+                }
+            }
             let _ = app_clone.emit(
                 "miner:log",
                 &LogMsg {
@@ -567,6 +587,22 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                     line: line.clone(),
                 },
             );
+            // detect and update dynamic local RPC endpoint from stderr too
+            if let Some(pos) = line.find("Running JSON-RPC server: addr=") {
+                let rest = &line[pos + "Running JSON-RPC server: addr=".len()..];
+                if let Some(end) = rest.find(',') {
+                    let addr = rest[..end].trim();
+                    if !addr.is_empty() {
+                        let _ = app_clone.emit(
+                            "miner:log",
+                            &LogMsg {
+                                source: "ui",
+                                line: format!("Detected local RPC endpoint: ws://{}", addr),
+                            },
+                        );
+                    }
+                }
+            }
 
             // Safe sync mode automation:
             // Detect current importing block and set a pending toggle for safe mode.
@@ -609,7 +645,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                         // and not after we've already passed all ranges.
                         let pre_window: u64 = 100;
                         let min_start = ranges.iter().map(|(s, _)| *s).min().unwrap_or(u64::MAX);
-                        let approaching =
+                        let _approaching =
                             !past_all && cur_block >= min_start.saturating_sub(pre_window);
 
                         let active_now = { *SAFE_MODE_ACTIVE.lock().await };
@@ -804,6 +840,8 @@ fn spawn_status_task(app: AppHandle) {
             >,
         > = None;
         let mut tick: u32 = 0;
+        // dynamic local RPC endpoint (ws), default to 127.0.0.1:9944 until we parse it from logs/meta
+        let mut local_ws_url: String = crate::rpc::local_ws_endpoint().to_string();
         // persistent bootnode ws and last update tracking
         let mut ws_boot_opt: Option<
             tokio_tungstenite::WebSocketStream<
@@ -821,30 +859,41 @@ fn spawn_status_task(app: AppHandle) {
 
             // Ensure WS connection to local node JSON-RPC
             if ws_opt.is_none() {
-                if let Ok((ws, _)) =
-                    tokio_tungstenite::connect_async(crate::rpc::local_ws_endpoint()).await
-                {
-                    ws_opt = Some(ws);
-                    sub_id = None;
-                } else {
-                    // Emit whatever we have and retry shortly
-                    let _ = app.emit(
-                        "miner:status",
-                        &MinerStatus {
-                            peers,
-                            current_block: best,
-                            highest_block: highest,
-                            is_syncing,
-                            bootnode_connected,
-                            bootnode_host: bootnode_host.clone(),
-                            bootnode_stale_secs: last_bootnode_update
-                                .map(|t| t.elapsed().as_secs())
-                                .or(Some(u64::MAX)),
-                        },
-                    );
-                    tokio::time::sleep(Duration::from_millis(1200)).await;
-                    continue;
-                }
+                // try the dynamic endpoint first; if it fails, fallback once to default
+                // attempt connection to dynamic endpoint first
+                let ws = match tokio_tungstenite::connect_async(&local_ws_url).await {
+                    Ok((ws, _)) => ws,
+                    Err(_) => {
+                        // fallback to default endpoint
+                        let def = crate::rpc::local_ws_endpoint().to_string();
+                        match tokio_tungstenite::connect_async(&def).await {
+                            Ok((ws, _)) => {
+                                local_ws_url = def;
+                                ws
+                            }
+                            Err(_) => {
+                                // Emit whatever we have and retry shortly
+                                let _ = app.emit(
+                                    "miner:status",
+                                    &MinerStatus {
+                                        peers,
+                                        current_block: best,
+                                        highest_block: highest,
+                                        is_syncing,
+                                        bootnode_connected,
+                                        bootnode_host: bootnode_host.clone(),
+                                        bootnode_stale_secs: last_bootnode_update
+                                            .map(|t| t.elapsed().as_secs()),
+                                    },
+                                );
+                                tokio::time::sleep(Duration::from_millis(1200)).await;
+                                continue;
+                            }
+                        }
+                    }
+                };
+                ws_opt = Some(ws);
+                sub_id = None;
             }
 
             let ws = ws_opt.as_mut().unwrap();

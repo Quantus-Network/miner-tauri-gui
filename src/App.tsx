@@ -618,12 +618,18 @@ export default function App() {
           </select>
         </div>
         {balanceDisplay && (
-          <div
+          <button
             className="pill bg-black/80 text-white"
             title={`Balance (${balanceSymbol}, ${balanceDecimals}dp)`}
+            onClick={() => {
+              if (account?.address && chain === "resonance") {
+                const url = `https://qsafe.af/chains/resonance/account/${account.address}`;
+                window.open(url, "_blank", "noopener,noreferrer");
+              }
+            }}
           >
             Balance: {balanceDisplay}
-          </div>
+          </button>
         )}
         <div className="ml-2 flex items-center gap-2">
           <label
@@ -644,26 +650,18 @@ export default function App() {
             />
             Log to file
           </label>
-          {logFilePath ? (
-            <>
-              <span className="text-xs opacity-70">Log:</span>
-              <span
-                className="text-xs font-mono max-w-[22rem] truncate"
-                title={logFilePath}
-              >
-                {logFilePath}
-              </span>
-              <button
-                className="rounded px-2 py-1 border text-xs"
-                title={logFilePath}
-                onClick={() => revealItemInDir(logFilePath)}
-              >
-                Open
-              </button>
-            </>
-          ) : (
-            <span className="text-xs opacity-50">Log: (not active)</span>
-          )}
+          <>
+            <button
+              className="rounded px-2 py-1 border text-xs"
+              title={logFilePath ? logFilePath : "Log not active"}
+              onClick={() => {
+                if (logFilePath) revealItemInDir(logFilePath);
+              }}
+              disabled={!logFilePath}
+            >
+              Open
+            </button>
+          </>
         </div>
         <div
           className="w-80 h-2 rounded bg-black/20 overflow-hidden"
