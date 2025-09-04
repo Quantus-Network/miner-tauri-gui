@@ -101,12 +101,8 @@ pub async fn query_balance(
     chain: String,
     address: String,
 ) -> Result<crate::rpc::BalanceView, String> {
-    let ws = match chain.as_str() {
-        "resonance" => "wss://a.t.res.fm", // (you gave this)
-        "heisenberg" => "wss://a.i.res.fm",
-        // "quantus" => "...", // mainnet – disabled in UI for now
-        _ => return Err("unknown chain".into()),
-    };
+    let ws = crate::rpc::bootnode_ws_for_chain(chain.as_str())
+        .ok_or_else(|| "unknown chain".to_string())?;
     rpc::fetch_balance(ws, &address)
         .await
         .map_err(|e| e.to_string())

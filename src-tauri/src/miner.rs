@@ -313,8 +313,12 @@ async fn query_local_node_status() -> Result<MinerStatus> {
 /// empty fields until it can connect.
 fn spawn_status_task(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
         loop {
-            let snap = match query_local_node_status().await {
+            // 1) Query local node for current/height/peers
+            let mut snap = match query_local_node_status().await {
                 Ok(s) => s,
                 Err(_) => MinerStatus {
                     peers: None,
@@ -323,7 +327,48 @@ fn spawn_status_task(app: AppHandle) {
                     is_syncing: None,
                 },
             };
+
+            // 2) If we know which chain we're on, consult the bootnode for the highest height
+            //    and merge that into our view so progress can be computed accurately.
+            let chain_ui = { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) };
+            if let Some(chain_name) = chain_ui {
+                if let Some(ws_url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
+                    if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(ws_url).await {
+                        let req_sync = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 42,
+                            "method": "system_syncState",
+                            "params": []
+                        });
+                        // best-effort request
+                        let _ = ws.send(Message::Text(req_sync.to_string())).await;
+
+                        // read one response with a timeout
+                        if let Ok(Some(Ok(Message::Text(txt)))) =
+                            tokio::time::timeout(Duration::from_millis(1500), ws.next()).await
+                        {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                let res = val
+                                    .get("result")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                if let Some(h) =
+                                    res.get("highestBlock").and_then(|v| parse_u64_from_json(v))
+                                {
+                                    snap.highest_block = match snap.highest_block {
+                                        Some(local_h) => Some(local_h.max(h)),
+                                        None => Some(h),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3) Emit consolidated status snapshot for the UI
             let _ = app.emit("miner:status", &snap);
+
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });

@@ -16,8 +16,19 @@ type Chain = "resonance" | "heisenberg" | "quantus";
 
 export default function App() {
   const [account, setAccount] = useState<any>(null);
-  const [chain, setChain] = useState<Chain>("resonance");
-  const [logs, setLogs] = useState<string[]>([]);
+  const [chain, setChain] = useState<Chain>(() => {
+    const s = localStorage.getItem("qm.chain");
+    return (s as Chain) || "resonance";
+  });
+  const [logs, setLogs] = useState<string[]>(() => {
+    try {
+      const s = localStorage.getItem("qm.logs");
+      const arr = s ? JSON.parse(s) : [];
+      return Array.isArray(arr) ? arr.slice(-1000) : [];
+    } catch {
+      return [];
+    }
+  });
   const [hps, setHps] = useState<number>(0);
   const [mining, setMining] = useState(false);
   const [balance, setBalance] = useState<string>("—");
@@ -31,7 +42,13 @@ export default function App() {
   const [peers, setPeers] = useState<number | null>(null);
   const [best, setBest] = useState<number | null>(null);
   const [highest, setHighest] = useState<number | null>(null);
-  const [lineLimit, setLineLimit] = useState<number>(400);
+  const [lineLimit, setLineLimit] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem("qm.lineLimit") || "", 10);
+    return Number.isFinite(v) && v > 0 ? v : 400;
+  });
+  const [autoStart, setAutoStart] = useState<boolean>(
+    () => localStorage.getItem("qm.autoStart") === "1",
+  );
   const lineLimitRef = useRef(lineLimit);
 
   function showToast(msg: string) {
@@ -41,14 +58,31 @@ export default function App() {
   }
 
   useEffect(() => {
-    ensureMinerAndAccount().then(({ minerPath, accountJsonPath, account }) => {
-      setMinerPath(minerPath);
-      setAccountJsonPath(accountJsonPath);
-      setAccount(account); // shows ss58
-    });
-  }, []);
+    ensureMinerAndAccount().then(
+      async ({ minerPath, accountJsonPath, account }) => {
+        setMinerPath(minerPath);
+        setAccountJsonPath(accountJsonPath);
+        setAccount(account); // shows ss58
+
+        // Auto-start scaffold: resume mining if previously active and auto-start is enabled
+        const wasMining = localStorage.getItem("qm.wasMining") === "1";
+        if (autoStart && wasMining && account && minerPath) {
+          const c = chain === "quantus" ? "resonance" : chain;
+          try {
+            setStatus("Starting");
+            setSyncBlock(null);
+            await startMiner(c, account.address, minerPath, []);
+            setMining(true);
+          } catch {
+            // error visibility handled by existing toast/log logic
+          }
+        }
+      },
+    );
+  }, [autoStart, chain]);
   useEffect(() => {
     lineLimitRef.current = lineLimit;
+    localStorage.setItem("qm.lineLimit", String(lineLimit));
     setLogs((prev) => {
       const limit = Math.max(0, lineLimit);
       if (limit > 0 && prev.length > limit) {
@@ -107,7 +141,11 @@ export default function App() {
         const limit = Math.max(0, lineLimitRef.current || 0);
         const base =
           limit > 0 && prev.length > limit ? prev.slice(-limit) : prev;
-        return base.concat(line);
+        const next = base.concat(line);
+        try {
+          localStorage.setItem("qm.logs", JSON.stringify(next.slice(-1000)));
+        } catch {}
+        return next;
       });
     });
     const un3 = onMinerStatus((s: MinerStatus) => {
@@ -141,6 +179,9 @@ export default function App() {
       setSyncBlock(null);
       await startMiner(c, account.address, minerPath, []);
       setMining(true);
+      try {
+        localStorage.setItem("qm.wasMining", "1");
+      } catch {}
     } catch (err: any) {
       showToast(
         err?.message
@@ -153,6 +194,9 @@ export default function App() {
     try {
       await stopMiner();
       setMining(false);
+      try {
+        localStorage.setItem("qm.wasMining", "0");
+      } catch {}
       setStatus("Idle");
       setSyncBlock(null);
     } catch (err: any) {
@@ -188,34 +232,87 @@ export default function App() {
     setBalance(res.free);
   }
 
+  const progressPct =
+    typeof best === "number" && typeof highest === "number" && highest > 0
+      ? Math.max(0, Math.min(100, Math.floor((best / highest) * 100)))
+      : 0;
+
   return (
     <div className="p-6 max-w-3xl mx-auto font-sans">
-      <div className="fixed top-4 right-4 z-40 flex items-center gap-2">
-        <div
-          className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
-            status === "Mining"
-              ? "bg-green-600 text-white"
-              : status === "Syncing"
-                ? "bg-amber-500 text-black"
-                : status === "Starting"
-                  ? "bg-blue-600 text-white"
-                  : status === "Repairing"
-                    ? "bg-purple-600 text-white"
-                    : status === "Error"
-                      ? "bg-red-600 text-white"
-                      : "bg-gray-500 text-white"
-          }`}
-          title="Miner status"
-        >
-          {status === "Syncing" && syncBlock ? `Syncing #${syncBlock}` : status}
+      <div className="fixed top-4 right-4 z-40 flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2">
+          <div
+            className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
+              status === "Mining"
+                ? "bg-green-600 text-white"
+                : status === "Syncing"
+                  ? "bg-amber-500 text-black"
+                  : status === "Starting"
+                    ? "bg-blue-600 text-white"
+                    : status === "Repairing"
+                      ? "bg-purple-600 text-white"
+                      : status === "Error"
+                        ? "bg-red-600 text-white"
+                        : "bg-gray-500 text-white"
+            }`}
+            title="Miner status"
+          >
+            {status === "Syncing"
+              ? typeof best === "number" &&
+                typeof highest === "number" &&
+                highest > 0
+                ? `Syncing #${best} / #${highest} (${Math.floor(
+                    (best / highest) * 100,
+                  )}%)`
+                : syncBlock
+                  ? `Syncing #${syncBlock}`
+                  : "Syncing"
+              : status}
+          </div>
+          <div
+            className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
+              typeof peers !== "number"
+                ? "bg-gray-600 text-white"
+                : peers >= 3
+                  ? "bg-green-600 text-white"
+                  : peers >= 1
+                    ? "bg-amber-500 text-black"
+                    : "bg-red-600 text-white"
+            }`}
+            title="Peers / Best / Highest (RPC)"
+          >
+            {typeof peers === "number" ? `${peers} peers` : "— peers"} ·{" "}
+            {typeof best === "number" ? `#${best}` : "#—"} /{" "}
+            {typeof highest === "number" ? `#${highest}` : "#—"}
+          </div>
+          <label
+            className="ml-2 flex items-center gap-1 text-xs font-semibold bg-black/80 text-white rounded-full px-3 py-1 shadow"
+            title="Auto-start miner on launch if previously running"
+          >
+            <input
+              type="checkbox"
+              className="accent-blue-600"
+              checked={autoStart}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setAutoStart(v);
+                try {
+                  localStorage.setItem("qm.autoStart", v ? "1" : "0");
+                } catch {}
+              }}
+            />
+            Auto-start
+          </label>
         </div>
         <div
-          className="rounded-full px-3 py-1 text-xs font-semibold bg-black/80 text-white shadow"
-          title="Peers / Best / Highest from local node (RPC)"
+          className="w-80 h-2 rounded bg-black/20 overflow-hidden"
+          title="Sync progress"
+          aria-label="Sync progress"
         >
-          {typeof peers === "number" ? `${peers} peers` : "— peers"} ·{" "}
-          {typeof best === "number" ? `#${best}` : "#—"} /{" "}
-          {typeof highest === "number" ? `#${highest}` : "#—"}
+          <div
+            className={`h-full ${status === "Mining" ? "bg-green-600" : "bg-amber-500"}`}
+            style={{ width: `${progressPct}%` }}
+          />
         </div>
       </div>
       <h1 className="text-2xl font-bold mb-2">Quantus Miner (Demo)</h1>
@@ -233,7 +330,13 @@ export default function App() {
         <select
           className="border rounded px-2 py-1"
           value={chain}
-          onChange={(e) => setChain(e.target.value as Chain)}
+          onChange={(e) => {
+            const c = e.target.value as Chain;
+            setChain(c);
+            try {
+              localStorage.setItem("qm.chain", c);
+            } catch {}
+          }}
         >
           <option value="resonance">Resonance (testnet)</option>
           <option value="heisenberg" disabled>
