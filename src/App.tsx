@@ -510,29 +510,25 @@ export default function App() {
             className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
               status === "Mining"
                 ? "bg-green-600 text-white"
-                : status === "Syncing"
-                  ? "bg-amber-500 text-black"
-                  : status === "Starting"
-                    ? "bg-blue-600 text-white"
-                    : status === "Repairing"
-                      ? "bg-purple-600 text-white"
-                      : status === "Error"
-                        ? "bg-red-600 text-white"
-                        : "bg-gray-500 text-white"
+                : status === "Starting"
+                  ? "bg-blue-600 text-white"
+                  : status === "Repairing"
+                    ? "bg-purple-600 text-white"
+                    : status === "Error"
+                      ? "bg-red-600 text-white"
+                      : "bg-gray-500 text-white"
             }`}
             title="Miner status"
           >
-            {status === "Syncing"
-              ? typeof best === "number" &&
-                typeof highest === "number" &&
-                highest > 0
-                ? `Syncing #${best} / #${highest} (${Math.floor(
-                    (best / highest) * 100,
-                  )}%)`
-                : syncBlock
-                  ? `Syncing #${syncBlock}`
-                  : "Syncing"
-              : status}
+            {status === "Starting"
+              ? "Starting"
+              : status === "Repairing"
+                ? "Repairing"
+                : status === "Error"
+                  ? "Error"
+                  : status === "Mining"
+                    ? "Mining"
+                    : "Idle"}
           </div>
           {safeMode && (
             <div
@@ -624,10 +620,16 @@ export default function App() {
           <button
             className="pill bg-black/80 text-white"
             title={`Balance (${balanceSymbol}, ${balanceDecimals}dp)`}
-            onClick={() => {
+            onClick={async () => {
               if (account?.address && chain === "resonance") {
                 const url = `https://qsafe.af/chains/resonance/account/${account.address}`;
-                window.open(url, "_blank", "noopener,noreferrer");
+                try {
+                  const { openUrl } = await import("@tauri-apps/plugin-opener");
+                  await openUrl(url);
+                } catch (e) {
+                  // fallback for non-tauri contexts
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }
               }
             }}
           >

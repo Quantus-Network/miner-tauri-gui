@@ -188,6 +188,8 @@ lazy_static! {
     // Per-chain troublesome ranges (loaded/saved from a simple JSON file in app data dir).
     pub static ref SAFE_RANGES: Mutex<std::collections::HashMap<String, Vec<(u64, u64)>>> =
         Mutex::new(load_safe_ranges_or_default());
+    // Dynamic local RPC endpoint discovered from logs. Default to 127.0.0.1:9944.
+    pub static ref LOCAL_WS_URL: Mutex<String> = Mutex::new(crate::rpc::local_ws_endpoint().to_string());
 }
 
 // Helpers for per-chain safe-ranges persistence (JSON at data_dir/quantus-miner/safe_ranges.json)
@@ -268,9 +270,6 @@ pub fn save_safe_ranges(app: &AppHandle, map: &HashMap<String, Vec<(u64, u64)>>)
     }
     Ok(())
 }
-
-// Troublesome block ranges per chain. For Resonance: heavy blocks around 13311..=13360.
-const RESONANCE_TROUBLESOME_RANGES: &[(u64, u64)] = &[(13000, 13100), (13300, 13400)];
 
 // --- Node key helpers ---
 // Base data dir used by quantus-node, e.g. on Linux: ~/.local/share/quantus-node
@@ -359,6 +358,29 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     );
     // ensure previous child is stopped
     stop().await.ok();
+
+    // create safe_ranges.json if missing (persist current map to app data dir)
+    if let Some(cfg_path) = safe_ranges_config_path_app(&app) {
+        if !cfg_path.exists() {
+            if let Err(e) = save_safe_ranges(&app, &SAFE_RANGES.lock().await.clone()) {
+                let _ = app.emit(
+                    "miner:log",
+                    &LogMsg {
+                        source: "ui",
+                        line: format!("Failed to create safe_ranges.json: {e}"),
+                    },
+                );
+            } else {
+                let _ = app.emit(
+                    "miner:log",
+                    &LogMsg {
+                        source: "ui",
+                        line: format!("Created {}", cfg_path.display()),
+                    },
+                );
+            }
+        }
+    }
 
     // load user-defined safe ranges (if any) and update the in-memory map
     {
@@ -710,9 +732,11 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 if let Some(end) = rest.find(',') {
                     let addr = rest[..end].trim();
                     if !addr.is_empty() {
-                        // update the dynamic ws url (use ws://host:port)
-                        // safety: captured by outer scope via Mutex-free string
-                        // this closure can only update via a message; emit meta so status task picks change
+                        // update shared LOCAL_WS_URL so status task reconnects to the right port
+                        {
+                            let mut u = LOCAL_WS_URL.lock().await;
+                            *u = format!("ws://{}", addr);
+                        }
                         let _ = app_clone.emit(
                             "miner:log",
                             &LogMsg {
@@ -764,6 +788,11 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 if let Some(end) = rest.find(',') {
                     let addr = rest[..end].trim();
                     if !addr.is_empty() {
+                        // update shared LOCAL_WS_URL so status task reconnects to the right port
+                        {
+                            let mut u = LOCAL_WS_URL.lock().await;
+                            *u = format!("ws://{}", addr);
+                        }
                         let _ = app_clone.emit(
                             "miner:log",
                             &LogMsg {
@@ -1011,8 +1040,6 @@ fn spawn_status_task(app: AppHandle) {
             >,
         > = None;
         let mut tick: u32 = 0;
-        // dynamic local RPC endpoint (ws), default to 127.0.0.1:9944 until we parse it from logs/meta
-        let mut local_ws_url: String = crate::rpc::local_ws_endpoint().to_string();
         // persistent bootnode ws and last update tracking
         let mut ws_boot_opt: Option<
             tokio_tungstenite::WebSocketStream<
@@ -1031,15 +1058,17 @@ fn spawn_status_task(app: AppHandle) {
             // Ensure WS connection to local node JSON-RPC
             if ws_opt.is_none() {
                 // try the dynamic endpoint first; if it fails, fallback once to default
-                // attempt connection to dynamic endpoint first
-                let ws = match tokio_tungstenite::connect_async(&local_ws_url).await {
+                // attempt connection to dynamic endpoint first (from shared state)
+                let current_ws = { LOCAL_WS_URL.lock().await.clone() };
+                let ws = match tokio_tungstenite::connect_async(&current_ws).await {
                     Ok((ws, _)) => ws,
                     Err(_) => {
-                        // fallback to default endpoint
+                        // fallback to default endpoint and update shared value
                         let def = crate::rpc::local_ws_endpoint().to_string();
                         match tokio_tungstenite::connect_async(&def).await {
                             Ok((ws, _)) => {
-                                local_ws_url = def;
+                                let mut u = LOCAL_WS_URL.lock().await;
+                                *u = def;
                                 ws
                             }
                             Err(_) => {
@@ -1127,6 +1156,49 @@ fn spawn_status_task(app: AppHandle) {
                         // Connection dropped; reconnect
                         ws_opt = None;
                         continue;
+                    }
+                }
+            } else {
+                // WebSocket idle; poll local RPC over HTTP once per second for best height
+                #[derive(serde::Deserialize)]
+                struct RpcResp {
+                    result: Option<serde_json::Value>,
+                }
+                let http_url = {
+                    let u = LOCAL_WS_URL.lock().await.clone();
+                    // ws://127.0.0.1:9944 -> http://127.0.0.1:9944
+                    if let Some(rest) = u.strip_prefix("ws://") {
+                        format!("http://{}", rest)
+                    } else if let Some(rest) = u.strip_prefix("wss://") {
+                        format!("https://{}", rest)
+                    } else {
+                        // fallback
+                        u.replace("ws://", "http://").replace("wss://", "https://")
+                    }
+                };
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "system_syncState",
+                    "params": []
+                });
+                if let Ok(client) = reqwest::Client::builder()
+                    .user_agent("quantus-miner/0.1")
+                    .build()
+                {
+                    if let Ok(resp) = client.post(&http_url).json(&body).send().await {
+                        if let Ok(r) = resp.json::<RpcResp>().await {
+                            if let Some(res) = r.result {
+                                if let Some(cb) =
+                                    res.get("currentBlock").and_then(parse_u64_from_json)
+                                {
+                                    if best != Some(cb) {
+                                        best = Some(cb);
+                                        _got_update = true;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1225,6 +1297,8 @@ fn spawn_status_task(app: AppHandle) {
                     bootnode_stale_secs: last_bootnode_update.map(|t| t.elapsed().as_secs()),
                 },
             );
+            // Ensure we loop roughly once per second to keep HTTP polling cadence
+            tokio::time::sleep(Duration::from_millis(1000)).await;
         }
     });
 }
