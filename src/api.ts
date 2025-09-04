@@ -36,6 +36,36 @@ export function onMinerStatus(cb: (s: MinerStatus) => void) {
   return listen<MinerStatus>("miner:status", (e) => cb(e.payload));
 }
 
+export type MinerMeta = {
+  binary?: string | null;
+  chain?: string | null;
+  rewards_address?: string | null;
+
+  version?: string | null;
+  chain_spec?: string | null;
+  node_name?: string | null;
+  role?: string | null;
+  database?: string | null;
+  local_identity?: string | null;
+  jsonrpc_addr?: string | null;
+  prometheus_addr?: string | null;
+  highest_known_block?: number | null;
+
+  os?: string | null;
+  arch?: string | null;
+  target?: string | null;
+  cpu?: string | null;
+  cpu_cores?: number | null;
+  memory?: string | null;
+  kernel?: string | null;
+  distro?: string | null;
+  vm?: string | null;
+};
+
+export function onMinerMeta(cb: (m: MinerMeta) => void) {
+  return listen<MinerMeta>("miner:meta", (e) => cb(e.payload));
+}
+
 export async function startMiner(
   chain: "resonance" | "heisenberg",
   rewardsAddress: string,

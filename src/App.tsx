@@ -8,7 +8,9 @@ import {
   onMinerLog,
   queryBalance,
   onMinerStatus,
+  onMinerMeta,
   type MinerStatus,
+  type MinerMeta,
 } from "./api";
 import { celebrate } from "./celebrate";
 
@@ -42,6 +44,14 @@ export default function App() {
   const [peers, setPeers] = useState<number | null>(null);
   const [best, setBest] = useState<number | null>(null);
   const [highest, setHighest] = useState<number | null>(null);
+  const [meta, setMeta] = useState<Partial<MinerMeta>>(() => {
+    try {
+      const s = localStorage.getItem("qm.meta");
+      return s ? (JSON.parse(s) as Partial<MinerMeta>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [lineLimit, setLineLimit] = useState<number>(() => {
     const v = parseInt(localStorage.getItem("qm.lineLimit") || "", 10);
     return Number.isFinite(v) && v > 0 ? v : 400;
@@ -161,10 +171,20 @@ export default function App() {
         setSyncBlock(null);
       }
     });
+    const un4 = onMinerMeta((m: MinerMeta) => {
+      setMeta((prev) => {
+        const merged = { ...prev, ...m };
+        try {
+          localStorage.setItem("qm.meta", JSON.stringify(merged));
+        } catch {}
+        return merged;
+      });
+    });
     return () => {
       un1.then((u) => u());
       un2.then((u) => u());
       un3.then((u) => u());
+      un4.then((u) => u());
     };
   }, []);
 
@@ -394,6 +414,154 @@ export default function App() {
         </div>
       </div>
 
+      <div className="rounded-2xl shadow p-4 mb-4 border">
+        <div className="mb-2 flex items-center gap-3">
+          <span>Node Info</span>
+          <button
+            className="rounded px-2 py-1 border text-xs"
+            onClick={() => {
+              try {
+                navigator.clipboard.writeText(
+                  JSON.stringify(meta ?? {}, null, 2),
+                );
+                showToast("Copied node info to clipboard");
+              } catch {}
+            }}
+          >
+            Copy
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+          {meta?.version && (
+            <div>
+              <span className="opacity-70">Version</span>
+              <div className="font-mono break-all">{meta.version}</div>
+            </div>
+          )}
+          {meta?.chain_spec && (
+            <div>
+              <span className="opacity-70">Chain Spec</span>
+              <div className="font-mono break-all">{meta.chain_spec}</div>
+            </div>
+          )}
+          {meta?.node_name && (
+            <div>
+              <span className="opacity-70">Node name</span>
+              <div className="font-mono break-all">{meta.node_name}</div>
+            </div>
+          )}
+          {meta?.role && (
+            <div>
+              <span className="opacity-70">Role</span>
+              <div className="font-mono break-all">{meta.role}</div>
+            </div>
+          )}
+          {meta?.database && (
+            <div className="col-span-2">
+              <span className="opacity-70">Database</span>
+              <div className="font-mono break-all">{meta.database}</div>
+            </div>
+          )}
+          {meta?.local_identity && (
+            <div className="col-span-2">
+              <span className="opacity-70">Local identity</span>
+              <div className="font-mono break-all">{meta.local_identity}</div>
+            </div>
+          )}
+          {meta?.jsonrpc_addr && (
+            <div>
+              <span className="opacity-70">JSON-RPC</span>
+              <div className="font-mono break-all">{meta.jsonrpc_addr}</div>
+            </div>
+          )}
+          {meta?.prometheus_addr && (
+            <div>
+              <span className="opacity-70">Prometheus</span>
+              <div className="font-mono break-all">{meta.prometheus_addr}</div>
+            </div>
+          )}
+          {typeof meta?.highest_known_block === "number" && (
+            <div>
+              <span className="opacity-70">Highest known</span>
+              <div className="font-mono break-all">
+                #{meta.highest_known_block}
+              </div>
+            </div>
+          )}
+          {meta?.os && (
+            <div>
+              <span className="opacity-70">OS</span>
+              <div className="font-mono break-all">{meta.os}</div>
+            </div>
+          )}
+          {meta?.arch && (
+            <div>
+              <span className="opacity-70">Arch</span>
+              <div className="font-mono break-all">{meta.arch}</div>
+            </div>
+          )}
+          {meta?.target && (
+            <div>
+              <span className="opacity-70">Target</span>
+              <div className="font-mono break-all">{meta.target}</div>
+            </div>
+          )}
+          {meta?.cpu && (
+            <div className="col-span-2">
+              <span className="opacity-70">CPU</span>
+              <div className="font-mono break-all">{meta.cpu}</div>
+            </div>
+          )}
+          {typeof meta?.cpu_cores === "number" && (
+            <div>
+              <span className="opacity-70">CPU cores</span>
+              <div className="font-mono break-all">{meta.cpu_cores}</div>
+            </div>
+          )}
+          {meta?.memory && (
+            <div>
+              <span className="opacity-70">Memory</span>
+              <div className="font-mono break-all">{meta.memory}</div>
+            </div>
+          )}
+          {meta?.kernel && (
+            <div>
+              <span className="opacity-70">Kernel</span>
+              <div className="font-mono break-all">{meta.kernel}</div>
+            </div>
+          )}
+          {meta?.distro && (
+            <div className="col-span-2">
+              <span className="opacity-70">Distro</span>
+              <div className="font-mono break-all">{meta.distro}</div>
+            </div>
+          )}
+          {meta?.vm && (
+            <div>
+              <span className="opacity-70">VM</span>
+              <div className="font-mono break-all">{meta.vm}</div>
+            </div>
+          )}
+          {meta?.binary && (
+            <div className="col-span-2">
+              <span className="opacity-70">Binary</span>
+              <div className="font-mono break-all">{meta.binary}</div>
+            </div>
+          )}
+          {meta?.chain && (
+            <div>
+              <span className="opacity-70">Chain</span>
+              <div className="font-mono break-all">{meta.chain}</div>
+            </div>
+          )}
+          {meta?.rewards_address && (
+            <div className="col-span-2">
+              <span className="opacity-70">Rewards</span>
+              <div className="font-mono break-all">{meta.rewards_address}</div>
+            </div>
+          )}
+        </div>
+      </div>
       <div className="rounded-2xl shadow p-4 mb-4 border">
         <div className="mb-2">Balance</div>
         <div className="font-mono">{balance}</div>

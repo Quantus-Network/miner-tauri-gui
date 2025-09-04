@@ -19,6 +19,162 @@ struct LogMsg {
     line: String,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+struct MinerMeta {
+    // From our own start context
+    binary: Option<String>,
+    chain: Option<String>,
+    rewards_address: Option<String>,
+
+    // From startup logs
+    version: Option<String>,
+    chain_spec: Option<String>,
+    node_name: Option<String>,
+    role: Option<String>,
+    database: Option<String>,
+    local_identity: Option<String>,
+    jsonrpc_addr: Option<String>,
+    prometheus_addr: Option<String>,
+    highest_known_block: Option<u64>,
+
+    // System info
+    os: Option<String>,
+    arch: Option<String>,
+    target: Option<String>,
+    cpu: Option<String>,
+    cpu_cores: Option<u32>,
+    memory: Option<String>,
+    kernel: Option<String>,
+    distro: Option<String>,
+    vm: Option<String>,
+}
+
+// Update MinerMeta with interesting values parsed from a single stderr log line.
+// Returns true if any field changed.
+fn update_meta_from_line(meta: &mut MinerMeta, line: &str) -> bool {
+    let mut changed = false;
+    let set = |dst: &mut Option<String>, v: String, changed: &mut bool| {
+        if dst.as_deref() != Some(v.as_str()) {
+            *dst = Some(v);
+            *changed = true;
+        }
+    };
+    let low = line.to_lowercase();
+
+    // Version
+    if let Some(ix) = low.find("version ") {
+        let v = line[ix + "version ".len()..].trim().to_string();
+        if !v.is_empty() {
+            set(&mut meta.version, v, &mut changed);
+        }
+    }
+    // Chain specification
+    if let Some(ix) = line.find("Chain specification:") {
+        let v = line[ix + "Chain specification:".len()..].trim().to_string();
+        if !v.is_empty() {
+            set(&mut meta.chain_spec, v, &mut changed);
+        }
+    }
+    // Node name
+    if let Some(ix) = line.find("Node name:") {
+        let v = line[ix + "Node name:".len()..].trim().to_string();
+        if !v.is_empty() {
+            set(&mut meta.node_name, v, &mut changed);
+        }
+    }
+    // Role
+    if let Some(ix) = line.find("Role:") {
+        let v = line[ix + "Role:".len()..].trim().to_string();
+        if !v.is_empty() {
+            set(&mut meta.role, v, &mut changed);
+        }
+    }
+    // Database path
+    if let Some(ix) = line.find("Database: RocksDb at") {
+        let v = line[ix + "Database: RocksDb at".len()..].trim().to_string();
+        if !v.is_empty() {
+            set(&mut meta.database, v, &mut changed);
+        }
+    }
+    // Local node identity
+    if let Some(ix) = line.find("Local node identity is:") {
+        let v = line[ix + "Local node identity is:".len()..]
+            .trim()
+            .to_string();
+        if !v.is_empty() {
+            set(&mut meta.local_identity, v, &mut changed);
+        }
+    }
+    // JSON-RPC server address
+    if let Some(ix) = line.find("Running JSON-RPC server: addr=") {
+        let v = line[ix + "Running JSON-RPC server: addr=".len()..]
+            .trim()
+            .to_string();
+        if !v.is_empty() {
+            set(&mut meta.jsonrpc_addr, v, &mut changed);
+        }
+    }
+    // Prometheus exporter
+    if let Some(ix) = line.find("Prometheus exporter started at") {
+        let v = line[ix + "Prometheus exporter started at".len()..]
+            .trim()
+            .to_string();
+        if !v.is_empty() {
+            set(&mut meta.prometheus_addr, v, &mut changed);
+        }
+    }
+    // Rewards address used
+    if let Some(ix) = line.find("Using provided rewards address:") {
+        let v = line[ix + "Using provided rewards address:".len()..]
+            .trim()
+            .to_string();
+        if !v.is_empty() {
+            set(&mut meta.rewards_address, v, &mut changed);
+        }
+    }
+    // Highest known block at #N
+    if let Some(ix) = low.find("highest known block at #") {
+        let rest = &low[ix + "highest known block at #".len()..];
+        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = num.parse::<u64>() {
+            if meta.highest_known_block != Some(n) {
+                meta.highest_known_block = Some(n);
+                changed = true;
+            }
+        }
+    }
+
+    // OS / CPU details
+    for (key, dst) in [
+        ("Operating system:", &mut meta.os),
+        ("CPU architecture:", &mut meta.arch),
+        ("Target environment:", &mut meta.target),
+        ("CPU:", &mut meta.cpu),
+        ("Memory:", &mut meta.memory),
+        ("Kernel:", &mut meta.kernel),
+        ("Linux distribution:", &mut meta.distro),
+        ("Virtual machine:", &mut meta.vm),
+    ] {
+        if let Some(ix) = line.find(key) {
+            let v = line[ix + key.len()..].trim().to_string();
+            if !v.is_empty() {
+                set(dst, v, &mut changed);
+            }
+        }
+    }
+    if let Some(ix) = line.find("CPU cores:") {
+        let v = line[ix + "CPU cores:".len()..].trim();
+        if let Ok(n) = v.parse::<u32>() {
+            if meta.cpu_cores != Some(n) {
+                meta.cpu_cores = Some(n);
+                changed = true;
+            }
+        }
+    }
+
+    changed
+}
+
 lazy_static! {
     static ref MINER: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
     static ref LAST_CFG: Mutex<Option<MinerConfig>> = Mutex::new(None);
@@ -150,6 +306,17 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
+    // Emit initial meta snapshot with known context
+    let _ = app.emit(
+        "miner:meta",
+        &MinerMeta {
+            binary: Some(cfg.binary_path.clone()),
+            chain: Some(cfg.chain.clone()),
+            rewards_address: Some(acct.address.clone()),
+            ..Default::default()
+        },
+    );
+
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
@@ -170,6 +337,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
+        let mut meta = MinerMeta::default();
         while let Ok(Some(line)) = reader.next_line().await {
             // surface stderr as logs; parse too (some miners log success to stderr)
             if let Some(ev) = parse_event(&line) {
@@ -180,9 +348,14 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 "miner:log",
                 &LogMsg {
                     source: "stderr",
-                    line,
+                    line: line.clone(),
                 },
             );
+
+            // Update and emit miner meta if this line contains interesting info.
+            if update_meta_from_line(&mut meta, &line) {
+                let _ = app_clone.emit("miner:meta", &meta);
+            }
 
             // Detect RocksDB corruption that needs a DB wipe and full resync:
             // "Invalid argument: Column families not opened: col12, col11, ..."
