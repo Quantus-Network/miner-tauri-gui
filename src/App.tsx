@@ -56,6 +56,8 @@ export default function App() {
     const v = parseInt(localStorage.getItem("qm.lineLimit") || "", 10);
     return Number.isFinite(v) && v > 0 ? v : 400;
   });
+  // simple derived display for balance pill
+  const balanceDisplay = balance && balance !== "—" ? balance : null;
   const [autoStart, setAutoStart] = useState<boolean>(
     () => localStorage.getItem("qm.autoStart") === "1",
   );
@@ -307,7 +309,7 @@ export default function App() {
       : 0;
 
   return (
-    <div className="p-6 max-w-3xl mx-auto font-sans">
+    <div className="p-6 max-w-6xl mx-auto font-sans">
       <div className="fixed top-4 right-4 z-40 flex flex-col items-end gap-1">
         <div className="flex items-center gap-2">
           <div
@@ -385,6 +387,11 @@ export default function App() {
             <option value="dark">Dark</option>
           </select>
         </div>
+        {balanceDisplay && (
+          <div className="pill bg-black/80 text-white" title="Balance">
+            Balance: {balanceDisplay}
+          </div>
+        )}
         <div
           className="w-80 h-2 rounded bg-black/20 overflow-hidden"
           title="Sync progress"
@@ -401,354 +408,343 @@ export default function App() {
         Creates a local account and wraps the CLI miner.
       </p>
 
-      <div className="rounded-2xl shadow p-4 mb-4 border">
-        <div className="mb-2">Account Address</div>
-        <div className="font-mono break-all">{account?.address ?? "…"}</div>
-      </div>
-
-      <div className="rounded-2xl shadow p-4 mb-4 border flex flex-wrap gap-3 items-start">
-        <label>Chain</label>
-        <select
-          className="border rounded px-2 py-1"
-          value={chain}
-          onChange={(e) => {
-            const c = e.target.value as Chain;
-            setChain(c);
-            try {
-              localStorage.setItem("qm.chain", c);
-            } catch {}
-          }}
-        >
-          <option value="resonance">Resonance (testnet)</option>
-          <option value="heisenberg" disabled>
-            Heisenberg (testnet – disabled, requires quantus-node
-            0.1.6-98ceb8de72a)
-          </option>
-          <option value="quantus" disabled>
-            Quantus (mainnet – disabled)
-          </option>
-        </select>
-
-        <div className="basis-full text-sm">
-          <div className="opacity-70 flex items-center gap-2">
-            <span>Binary</span>
+      <div className="grid gap-4 md:grid-cols-2 items-start">
+        <div className="rounded-2xl shadow p-4 mb-4 border">
+          <div className="mb-2 flex items-center gap-3">
+            <span>Node Info</span>
             <button
-              className="rounded px-2 py-0.5 border text-xs"
-              onClick={() => {
-                try {
-                  navigator.clipboard.writeText(minerPath || "");
-                  showToast("Copied");
-                } catch {}
-              }}
-            >
-              Copy
-            </button>
-          </div>
-          <div className="font-mono break-all whitespace-pre-wrap">
-            {minerPath || "installing…"}
-          </div>
-        </div>
-        <div className="basis-full text-sm">
-          <div className="opacity-70 flex items-center gap-2">
-            <span>Account JSON</span>
-            <button
-              className="rounded px-2 py-0.5 border text-xs"
-              onClick={() => {
-                try {
-                  navigator.clipboard.writeText(accountJsonPath || "");
-                  showToast("Copied");
-                } catch {}
-              }}
-            >
-              Copy
-            </button>
-          </div>
-          <div className="font-mono break-all whitespace-pre-wrap">
-            {accountJsonPath || "…"}
-          </div>
-        </div>
-        <div className="basis-full text-sm">
-          <div className="opacity-70 flex items-center gap-2">
-            <span>Planned command</span>
-            <button
-              className="rounded px-2 py-0.5 border text-xs"
+              className="rounded px-2 py-1 border text-xs"
               onClick={() => {
                 try {
                   navigator.clipboard.writeText(
-                    `${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`,
+                    JSON.stringify(meta ?? {}, null, 2),
                   );
-                  showToast("Copied");
+                  showToast("Copied node info to clipboard");
                 } catch {}
               }}
             >
               Copy
             </button>
+            <button
+              className="rounded px-2 py-1 border text-xs"
+              title="Clear captured node info (kept across restarts)"
+              onClick={() => {
+                try {
+                  localStorage.removeItem("qm.meta");
+                } catch {}
+                setMeta({});
+                showToast("Node info reset");
+              }}
+            >
+              Reset
+            </button>
           </div>
-          <div className="font-mono break-all whitespace-pre-wrap">
-            {`${minerPath} --chain ${
-              chain === "quantus"
-                ? "live_resonance"
-                : chain === "resonance"
-                  ? "live_resonance"
-                  : chain
-            } --rewards-address ${account?.address ?? ""}`}
-          </div>
-        </div>
-
-        {!mining ? (
-          <button className="rounded-xl px-3 py-2 border" onClick={onStart}>
-            Start
-          </button>
-        ) : (
-          <button className="rounded-xl px-3 py-2 border" onClick={onStop}>
-            Stop
-          </button>
-        )}
-
-        <button
-          className="rounded-xl px-3 py-2 border"
-          onClick={onRepair}
-          title="Stops the node, wipes the database, and restarts (full resync)"
-        >
-          Repair DB + Restart
-        </button>
-
-        <button
-          className="rounded-xl px-3 py-2 border"
-          onClick={refreshBalance}
-        >
-          Refresh Balance
-        </button>
-        <div className="ml-auto">
-          Hashrate: <b>{hps ? `${hps.toFixed(0)} H/s` : "—"}</b>
-        </div>
-      </div>
-
-      <div className="rounded-2xl shadow p-4 mb-4 border">
-        <div className="mb-2 flex items-center gap-3">
-          <span>Node Info</span>
-          <button
-            className="rounded px-2 py-1 border text-xs"
-            onClick={() => {
-              try {
-                navigator.clipboard.writeText(
-                  JSON.stringify(meta ?? {}, null, 2),
-                );
-                showToast("Copied node info to clipboard");
-              } catch {}
-            }}
-          >
-            Copy
-          </button>
-          <button
-            className="rounded px-2 py-1 border text-xs"
-            title="Clear captured node info (kept across restarts)"
-            onClick={() => {
-              try {
-                localStorage.removeItem("qm.meta");
-              } catch {}
-              setMeta({});
-              showToast("Node info reset");
-            }}
-          >
-            Reset
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-          {meta?.version && (
-            <div>
-              <span className="opacity-70">Version</span>
-              <div className="font-mono break-all">{meta.version}</div>
-            </div>
-          )}
-          {meta?.chain_spec && (
-            <div>
-              <span className="opacity-70">Chain Spec</span>
-              <div className="font-mono break-all">{meta.chain_spec}</div>
-            </div>
-          )}
-          {meta?.node_name && (
-            <div>
-              <span className="opacity-70">Node name</span>
-              <div className="font-mono break-all">{meta.node_name}</div>
-            </div>
-          )}
-          {meta?.role && (
-            <div>
-              <span className="opacity-70">Role</span>
-              <div className="font-mono break-all">{meta.role}</div>
-            </div>
-          )}
-          {meta?.database && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+            {meta?.version && (
+              <div>
+                <span className="opacity-70">Version</span>
+                <div className="font-mono break-all">{meta.version}</div>
+              </div>
+            )}
+            {meta?.chain_spec && (
+              <div>
+                <span className="opacity-70">Chain Spec</span>
+                <div className="font-mono break-all">{meta.chain_spec}</div>
+              </div>
+            )}
+            {meta?.node_name && (
+              <div>
+                <span className="opacity-70">Node name</span>
+                <div className="font-mono break-all">{meta.node_name}</div>
+              </div>
+            )}
+            {meta?.role && (
+              <div>
+                <span className="opacity-70">Role</span>
+                <div className="font-mono break-all">{meta.role}</div>
+              </div>
+            )}
+            {meta?.database && (
+              <div className="col-span-2">
+                <span className="opacity-70">Database</span>
+                <div className="font-mono break-all">{meta.database}</div>
+              </div>
+            )}
+            {meta?.local_identity && (
+              <div className="col-span-2">
+                <span className="opacity-70">Local identity</span>
+                <div className="font-mono break-all">{meta.local_identity}</div>
+              </div>
+            )}
+            {meta?.jsonrpc_addr && (
+              <div>
+                <span className="opacity-70">JSON-RPC</span>
+                <div className="font-mono break-all">{meta.jsonrpc_addr}</div>
+              </div>
+            )}
+            {meta?.prometheus_addr && (
+              <div>
+                <span className="opacity-70">Prometheus</span>
+                <div className="font-mono break-all">
+                  {meta.prometheus_addr}
+                </div>
+              </div>
+            )}
+            {typeof meta?.highest_known_block === "number" && (
+              <div>
+                <span className="opacity-70">Highest known</span>
+                <div className="font-mono break-all">
+                  #{meta.highest_known_block}
+                </div>
+              </div>
+            )}
+            {meta?.os && (
+              <div>
+                <span className="opacity-70">OS</span>
+                <div className="font-mono break-all">{meta.os}</div>
+              </div>
+            )}
+            {meta?.arch && (
+              <div>
+                <span className="opacity-70">Arch</span>
+                <div className="font-mono break-all">{meta.arch}</div>
+              </div>
+            )}
+            {meta?.target && (
+              <div>
+                <span className="opacity-70">Target</span>
+                <div className="font-mono break-all">{meta.target}</div>
+              </div>
+            )}
+            {meta?.cpu && (
+              <div className="col-span-2">
+                <span className="opacity-70">CPU</span>
+                <div className="font-mono break-all">{meta.cpu}</div>
+              </div>
+            )}
+            {typeof meta?.cpu_cores === "number" && (
+              <div>
+                <span className="opacity-70">CPU cores</span>
+                <div className="font-mono break-all">{meta.cpu_cores}</div>
+              </div>
+            )}
+            {meta?.memory && (
+              <div>
+                <span className="opacity-70">Memory</span>
+                <div className="font-mono break-all">{meta.memory}</div>
+              </div>
+            )}
+            {meta?.kernel && (
+              <div>
+                <span className="opacity-70">Kernel</span>
+                <div className="font-mono break-all">{meta.kernel}</div>
+              </div>
+            )}
+            {meta?.distro && (
+              <div className="col-span-2">
+                <span className="opacity-70">Distro</span>
+                <div className="font-mono break-all">{meta.distro}</div>
+              </div>
+            )}
+            {meta?.vm && (
+              <div>
+                <span className="opacity-70">VM</span>
+                <div className="font-mono break-all">{meta.vm}</div>
+              </div>
+            )}
+            {meta?.binary && (
+              <div className="col-span-2">
+                <span className="opacity-70">Binary</span>
+                <div className="font-mono break-all">{meta.binary}</div>
+              </div>
+            )}
             <div className="col-span-2">
-              <span className="opacity-70">Database</span>
-              <div className="font-mono break-all">{meta.database}</div>
-            </div>
-          )}
-          {meta?.local_identity && (
-            <div className="col-span-2">
-              <span className="opacity-70">Local identity</span>
-              <div className="font-mono break-all">{meta.local_identity}</div>
-            </div>
-          )}
-          {meta?.jsonrpc_addr && (
-            <div>
-              <span className="opacity-70">JSON-RPC</span>
-              <div className="font-mono break-all">{meta.jsonrpc_addr}</div>
-            </div>
-          )}
-          {meta?.prometheus_addr && (
-            <div>
-              <span className="opacity-70">Prometheus</span>
-              <div className="font-mono break-all">{meta.prometheus_addr}</div>
-            </div>
-          )}
-          {typeof meta?.highest_known_block === "number" && (
-            <div>
-              <span className="opacity-70">Highest known</span>
+              <span className="opacity-70">Rewards address</span>
               <div className="font-mono break-all">
-                #{meta.highest_known_block}
+                {meta.rewards_address ?? account?.address ?? "…"}
               </div>
             </div>
-          )}
-          {meta?.os && (
-            <div>
-              <span className="opacity-70">OS</span>
-              <div className="font-mono break-all">{meta.os}</div>
-            </div>
-          )}
-          {meta?.arch && (
-            <div>
-              <span className="opacity-70">Arch</span>
-              <div className="font-mono break-all">{meta.arch}</div>
-            </div>
-          )}
-          {meta?.target && (
-            <div>
-              <span className="opacity-70">Target</span>
-              <div className="font-mono break-all">{meta.target}</div>
-            </div>
-          )}
-          {meta?.cpu && (
-            <div className="col-span-2">
-              <span className="opacity-70">CPU</span>
-              <div className="font-mono break-all">{meta.cpu}</div>
-            </div>
-          )}
-          {typeof meta?.cpu_cores === "number" && (
-            <div>
-              <span className="opacity-70">CPU cores</span>
-              <div className="font-mono break-all">{meta.cpu_cores}</div>
-            </div>
-          )}
-          {meta?.memory && (
-            <div>
-              <span className="opacity-70">Memory</span>
-              <div className="font-mono break-all">{meta.memory}</div>
-            </div>
-          )}
-          {meta?.kernel && (
-            <div>
-              <span className="opacity-70">Kernel</span>
-              <div className="font-mono break-all">{meta.kernel}</div>
-            </div>
-          )}
-          {meta?.distro && (
-            <div className="col-span-2">
-              <span className="opacity-70">Distro</span>
-              <div className="font-mono break-all">{meta.distro}</div>
-            </div>
-          )}
-          {meta?.vm && (
-            <div>
-              <span className="opacity-70">VM</span>
-              <div className="font-mono break-all">{meta.vm}</div>
-            </div>
-          )}
-          {meta?.binary && (
-            <div className="col-span-2">
-              <span className="opacity-70">Binary</span>
-              <div className="font-mono break-all">{meta.binary}</div>
-            </div>
-          )}
-          {meta?.chain && (
-            <div>
-              <span className="opacity-70">Chain</span>
-              <div className="font-mono break-all">{meta.chain}</div>
-            </div>
-          )}
-          {meta?.rewards_address && (
-            <div className="col-span-2">
-              <span className="opacity-70">Rewards</span>
-              <div className="font-mono break-all">{meta.rewards_address}</div>
-            </div>
-          )}
+          </div>
         </div>
-      </div>
-      <div className="rounded-2xl shadow p-4 mb-4 border">
-        <div className="mb-2">Balance</div>
-        <div className="font-mono">{balance}</div>
-      </div>
 
-      <div className="rounded-2xl shadow p-4 border">
-        <div className="mb-2 flex items-center gap-3">
-          <span>Console</span>
-          <span className="text-xs opacity-70">Lines</span>
-          <input
-            type="number"
-            className="border rounded px-2 py-1 w-24"
-            min={50}
-            max={5000}
-            step={50}
-            value={lineLimit}
-            onChange={(e) => setLineLimit(Number(e.target.value) || 0)}
-          />
-          <button
-            className="rounded px-2 py-1 border text-xs"
-            title="Clear console and forget stored lines"
-            onClick={() => {
-              setLogs([]);
+        <div className="rounded-2xl shadow p-4 mb-4 border flex flex-wrap gap-3 items-start">
+          <label>Chain</label>
+          <select
+            className="border rounded px-2 py-1"
+            value={chain}
+            onChange={(e) => {
+              const c = e.target.value as Chain;
+              setChain(c);
               try {
-                localStorage.removeItem("qm.logs");
+                localStorage.setItem("qm.chain", c);
               } catch {}
             }}
           >
-            Clear
-          </button>
+            <option value="resonance">Resonance (testnet)</option>
+            <option value="heisenberg" disabled>
+              Heisenberg (testnet – disabled, requires quantus-node
+              0.1.6-98ceb8de72a)
+            </option>
+            <option value="quantus" disabled>
+              Quantus (mainnet – disabled)
+            </option>
+          </select>
+
+          <div className="basis-full text-sm">
+            <div className="opacity-70 flex items-center gap-2">
+              <span>Binary</span>
+              <button
+                className="rounded px-2 py-0.5 border text-xs"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(minerPath || "");
+                    showToast("Copied");
+                  } catch {}
+                }}
+              >
+                Copy
+              </button>
+            </div>
+            <div className="font-mono break-all whitespace-pre-wrap">
+              {minerPath || "installing…"}
+            </div>
+          </div>
+          <div className="basis-full text-sm">
+            <div className="opacity-70 flex items-center gap-2">
+              <span>Account JSON</span>
+              <button
+                className="rounded px-2 py-0.5 border text-xs"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(accountJsonPath || "");
+                    showToast("Copied");
+                  } catch {}
+                }}
+              >
+                Copy
+              </button>
+            </div>
+            <div className="font-mono break-all whitespace-pre-wrap">
+              {accountJsonPath || "…"}
+            </div>
+          </div>
+          <div className="basis-full text-sm">
+            <div className="opacity-70 flex items-center gap-2">
+              <span>Planned command</span>
+              <button
+                className="rounded px-2 py-0.5 border text-xs"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(
+                      `${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`,
+                    );
+                    showToast("Copied");
+                  } catch {}
+                }}
+              >
+                Copy
+              </button>
+            </div>
+            <div className="font-mono break-all whitespace-pre-wrap">
+              {`${minerPath} --chain ${
+                chain === "quantus"
+                  ? "live_resonance"
+                  : chain === "resonance"
+                    ? "live_resonance"
+                    : chain
+              } --rewards-address ${account?.address ?? ""}`}
+            </div>
+          </div>
+
+          {!mining ? (
+            <button className="rounded-xl px-3 py-2 border" onClick={onStart}>
+              Start
+            </button>
+          ) : (
+            <button className="rounded-xl px-3 py-2 border" onClick={onStop}>
+              Stop
+            </button>
+          )}
+
           <button
-            className="rounded px-2 py-1 border text-xs"
-            title="Export console to a text file"
-            onClick={() => {
-              try {
-                const data = logs.join("\n");
-                const blob = new Blob([data], { type: "text/plain" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `quantus-logs-${new Date()
-                  .toISOString()
-                  .replace(/[:.]/g, "-")}.txt`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-              } catch (e) {
-                console.error("Export logs failed", e);
-              }
-            }}
+            className="rounded-xl px-3 py-2 border"
+            onClick={onRepair}
+            title="Stops the node, wipes the database, and restarts (full resync)"
           >
-            Export
+            Repair DB + Restart
           </button>
+
+          <button
+            className="rounded-xl px-3 py-2 border"
+            onClick={refreshBalance}
+          >
+            Refresh Balance
+          </button>
+          <div className="ml-auto">
+            Hashrate: <b>{hps ? `${hps.toFixed(0)} H/s` : "—"}</b>
+          </div>
         </div>
-        <pre className="h-48 overflow-auto text-xs leading-tight bg-black text-green-300 p-3 rounded-md">
-          {logs.join("\n")}
-        </pre>
+
+        <div className="rounded-2xl shadow p-4 border md:col-span-2">
+          <div className="mb-2 flex items-center gap-3">
+            <span>Console</span>
+            <span className="text-xs opacity-70">Lines</span>
+            <input
+              type="number"
+              className="border rounded px-2 py-1 w-24"
+              min={50}
+              max={5000}
+              step={50}
+              value={lineLimit}
+              onChange={(e) => setLineLimit(Number(e.target.value) || 0)}
+            />
+            <button
+              className="rounded px-2 py-1 border text-xs"
+              title="Clear console and forget stored lines"
+              onClick={() => {
+                setLogs([]);
+                try {
+                  localStorage.removeItem("qm.logs");
+                } catch {}
+              }}
+            >
+              Clear
+            </button>
+            <button
+              className="rounded px-2 py-1 border text-xs"
+              title="Export console to a text file"
+              onClick={() => {
+                try {
+                  const data = logs.join("\n");
+                  const blob = new Blob([data], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `quantus-logs-${new Date()
+                    .toISOString()
+                    .replace(/[:.]/g, "-")}.txt`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                } catch (e) {
+                  console.error("Export logs failed", e);
+                }
+              }}
+            >
+              Export
+            </button>
+          </div>
+          <pre className="max-h-[30vh] overflow-auto text-xs leading-tight bg-black text-green-300 p-3 rounded-md scrollbar-thin">
+            {logs.join("\n")}
+          </pre>
+        </div>
+        {toast && (
+          <div className="fixed bottom-4 right-4 z-50 rounded px-3 py-2 bg-red-600 text-white shadow">
+            {toast}
+          </div>
+        )}
       </div>
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50 rounded px-3 py-2 bg-red-600 text-white shadow">
-          {toast}
-        </div>
-      )}
     </div>
   );
 }
