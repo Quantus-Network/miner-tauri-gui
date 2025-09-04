@@ -25,6 +25,7 @@ fn main() {
             query_balance,
             select_chain,
             repair_miner,
+            unlock_miner,
         ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {

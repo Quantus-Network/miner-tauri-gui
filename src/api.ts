@@ -21,7 +21,7 @@ export function onMinerEvent(cb: (ev: MinerEvent) => void) {
 }
 export function onMinerLog(cb: (line: string) => void) {
   return listen<{ source: string; line: string }>("miner:log", (e) =>
-    cb(`[${e.payload.source}] ${e.payload.line}`),
+    cb(e.payload.line),
   );
 }
 
@@ -71,6 +71,7 @@ export async function startMiner(
   rewardsAddress: string,
   binaryPath: string,
   extraArgs: string[] = [],
+  logToFile: boolean = false,
 ) {
   try {
     return await invoke("start_miner", {
@@ -79,6 +80,7 @@ export async function startMiner(
         rewards_address: rewardsAddress,
         binary_path: binaryPath,
         extra_args: extraArgs,
+        log_to_file: logToFile,
       },
     });
   } catch (err) {

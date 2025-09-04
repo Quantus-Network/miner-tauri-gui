@@ -12,6 +12,7 @@ import {
   type MinerStatus,
   type MinerMeta,
 } from "./api";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { celebrate } from "./celebrate";
 
 type Chain = "resonance" | "heisenberg" | "quantus";
@@ -60,6 +61,12 @@ export default function App() {
   const balanceDisplay = balance && balance !== "—" ? balance : null;
   const [autoStart, setAutoStart] = useState<boolean>(
     () => localStorage.getItem("qm.autoStart") === "1",
+  );
+  const [logToFile, setLogToFile] = useState<boolean>(
+    () => localStorage.getItem("qm.logToFile") === "1",
+  );
+  const [logFilePath, setLogFilePath] = useState<string>(
+    () => localStorage.getItem("qm.logFilePath") || "",
   );
   type ThemeMode = "system" | "light" | "dark";
   const [theme, setTheme] = useState<ThemeMode>(
@@ -116,7 +123,7 @@ export default function App() {
           try {
             setStatus("Starting");
             setSyncBlock(null);
-            await startMiner(c, account.address, minerPath, []);
+            await startMiner(c, account.address, minerPath, [], logToFile);
             setMining(true);
           } catch {
             // error visibility handled by existing toast/log logic
@@ -156,11 +163,7 @@ export default function App() {
       // For now this is a no-op until backend emits such an event.
     });
     const un2 = onMinerLog((line) => {
-      // Parse "[source] message" format
-      const m = line.match(/^\[(\w+)\]\s*(.*)$/);
-      const source = (m?.[1] || "").toLowerCase();
-      const body = (m?.[2] || line).trim();
-      const l = body.toLowerCase();
+      const l = line.toLowerCase();
 
       // Tone down celebration for prepared blocks: show a soft "Maybe" status.
       // Typical substrate-ish logs: "prepared a block for proposing", "block proposal prepared", etc.
@@ -178,23 +181,22 @@ export default function App() {
       // Status inference:
       // - Repair loop messages from backend "ui" source
       if (
-        source === "ui" &&
-        (l.includes("detected rocksdb corruption") ||
-          l.includes("repairing database") ||
-          l.includes("database wiped") ||
-          l.includes("repair restart"))
+        l.includes("detected rocksdb corruption") ||
+        l.includes("repairing database") ||
+        l.includes("database wiped") ||
+        l.includes("repair restart")
       ) {
         setStatus("Repairing");
-      } else if (source === "ui" && l.includes("repair complete")) {
+      } else if (l.includes("repair complete")) {
         // After repair, node restarts and will begin syncing
         setStatus("Syncing");
       } else if (l.includes("importing block")) {
-        const mBlock = body.match(/importing block\s+#(\d+)/i);
+        const mBlock = line.match(/importing block\s+#(\d+)/i);
         if (mBlock) setSyncBlock(Number(mBlock[1]));
         setStatus("Syncing");
       } else if (l.includes("total chain work")) {
         setStatus("Syncing");
-      } else if (source === "stderr" && l.includes("error")) {
+      } else if (l.includes("error")) {
         setStatus("Error");
       }
 
@@ -230,6 +232,14 @@ export default function App() {
         } catch {}
         return merged;
       });
+      // capture logfile path if backend emitted it via miner:logfile
+      if ((m as any)?.path) {
+        const p = (m as any).path as string;
+        setLogFilePath(p);
+        try {
+          localStorage.setItem("qm.logFilePath", p);
+        } catch {}
+      }
     });
     return () => {
       un1.then((u) => u());
@@ -392,6 +402,38 @@ export default function App() {
             Balance: {balanceDisplay}
           </div>
         )}
+        <div className="ml-2 flex items-center gap-2">
+          <label
+            className="text-xs opacity-70 flex items-center gap-1"
+            title="Also write logs to a file"
+          >
+            <input
+              type="checkbox"
+              className="accent-blue-600"
+              checked={logToFile}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setLogToFile(v);
+                try {
+                  localStorage.setItem("qm.logToFile", v ? "1" : "0");
+                } catch {}
+              }}
+            />
+            Log to file
+          </label>
+          {logFilePath ? (
+            <>
+              <span className="text-xs opacity-70">Log:</span>
+              <button
+                className="rounded px-2 py-1 border text-xs"
+                title={logFilePath}
+                onClick={() => revealItemInDir(logFilePath)}
+              >
+                Open
+              </button>
+            </>
+          ) : null}
+        </div>
         <div
           className="w-80 h-2 rounded bg-black/20 overflow-hidden"
           title="Sync progress"
@@ -582,8 +624,7 @@ export default function App() {
           >
             <option value="resonance">Resonance (testnet)</option>
             <option value="heisenberg" disabled>
-              Heisenberg (testnet – disabled, requires quantus-node
-              0.1.6-98ceb8de72a)
+              Heisenberg (testnet – disabled)
             </option>
             <option value="quantus" disabled>
               Quantus (mainnet – disabled)
@@ -622,6 +663,43 @@ export default function App() {
                 }}
               >
                 Copy
+              </button>
+              <button
+                className="rounded px-2 py-0.5 border text-xs"
+                onClick={async () => {
+                  try {
+                    if (accountJsonPath) {
+                      await revealItemInDir(accountJsonPath);
+                    } else {
+                      showToast("Account path not available yet");
+                    }
+                  } catch (e) {
+                    console.error("open account json failed", e);
+                  }
+                }}
+                title="Open the account JSON file in your system file manager"
+              >
+                Open
+              </button>
+              <button
+                className="rounded px-2 py-0.5 border text-xs"
+                onClick={async () => {
+                  try {
+                    const { revealItemInDir } = await import(
+                      "@tauri-apps/plugin-opener"
+                    );
+                    if (accountJsonPath) {
+                      await revealItemInDir(accountJsonPath);
+                    } else {
+                      showToast("Account path not available yet");
+                    }
+                  } catch (e) {
+                    console.error("open account json failed", e);
+                  }
+                }}
+                title="Open the account JSON file in your system file manager"
+              >
+                Open
               </button>
             </div>
             <div className="font-mono break-all whitespace-pre-wrap">
@@ -668,12 +746,39 @@ export default function App() {
 
           <button
             className="rounded-xl px-3 py-2 border"
-            onClick={onRepair}
-            title="Stops the node, wipes the database, and restarts (full resync)"
+            onClick={() => {
+              const ok = confirm(
+                "Resync will stop the node, delete the local chain database, and restart syncing from genesis. This may take a long time. Continue?",
+              );
+              if (ok) {
+                onRepair();
+              }
+            }}
+            title="Stops the node, wipes the database, and restarts from genesis"
           >
-            Repair DB + Restart
+            Resync
           </button>
 
+          <button
+            className="rounded-xl px-3 py-2 border"
+            onClick={async () => {
+              const ok = confirm(
+                "Unlock will stop the node, remove the leftover DB LOCK file, and restart the node. Use this if you saw a 'Resource temporarily unavailable' lock error. Continue?",
+              );
+              if (ok) {
+                try {
+                  // invoke backend unlock command
+                  const { invoke } = await import("@tauri-apps/api/core");
+                  await invoke("unlock_miner");
+                } catch (e) {
+                  console.error("unlock_miner failed", e);
+                }
+              }
+            }}
+            title="Stops the node, removes leftover DB lock, and restarts"
+          >
+            Unlock
+          </button>
           <button
             className="rounded-xl px-3 py-2 border"
             onClick={refreshBalance}

@@ -254,6 +254,7 @@ pub struct MinerConfig {
     pub rewards_address: String,
     pub binary_path: String,
     pub extra_args: Vec<String>,
+    pub log_to_file: bool,
 }
 
 pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
@@ -307,6 +308,40 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
+    // Prepare optional file logger
+    let mut log_file: Option<std::fs::File> = None;
+    if cfg.log_to_file {
+        if let Some(mut p) = dirs::data_local_dir() {
+            // Use an app-specific log dir
+            p.push("quantus-miner");
+            p.push("logs");
+            let _ = std::fs::create_dir_all(&p);
+            // Include PID in filename
+            let pid = child.id().unwrap_or(0);
+            let ts = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "now".into())
+                .replace(':', "-");
+            let fname = format!("miner-{}-{}.log", pid, ts);
+            p.push(fname);
+            if let Ok(f) = std::fs::File::create(&p) {
+                log_file = Some(f);
+                // Inform UI of logfile path
+                let _ = app.emit(
+                    "miner:log",
+                    &LogMsg {
+                        source: "ui",
+                        line: format!("Logging to file: {}", p.display()),
+                    },
+                );
+                let _ = app.emit(
+                    "miner:logfile",
+                    &serde_json::json!({ "path": p.display().to_string() }),
+                );
+            }
+        }
+    }
+
     // Emit initial meta snapshot with known context
     let _ = app.emit(
         "miner:meta",
@@ -319,11 +354,19 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     );
 
     let app_clone = app.clone();
+    // Clone a file handle for stdout task if enabled
+    let log_file_stdout = log_file.as_ref().and_then(|f| f.try_clone().ok());
     tauri::async_runtime::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
+        let mut file = log_file_stdout;
         while let Ok(Some(line)) = reader.next_line().await {
             if let Some(ev) = parse_event(&line) {
                 let _ = app_clone.emit("miner:event", &ev);
+            }
+            // write to file if enabled
+            if let Some(ref mut fh) = file {
+                use std::io::Write;
+                let _ = writeln!(fh, "{}", line);
             }
             let _ = app_clone.emit(
                 "miner:log",
@@ -336,13 +379,21 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     });
 
     let app_clone = app.clone();
+    // Clone a file handle for stderr task if enabled
+    let log_file_stderr = log_file.as_ref().and_then(|f| f.try_clone().ok());
     tauri::async_runtime::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         let mut meta = MinerMeta::default();
+        let mut file = log_file_stderr;
         while let Ok(Some(line)) = reader.next_line().await {
             // surface stderr as logs; parse too (some miners log success to stderr)
             if let Some(ev) = parse_event(&line) {
                 let _ = app_clone.emit("miner:event", &ev);
+            }
+            // write to file if enabled
+            if let Some(ref mut fh) = file {
+                use std::io::Write;
+                let _ = writeln!(fh, "{}", line);
             }
             let low = line.to_lowercase();
             let _ = app_clone.emit(
@@ -736,6 +787,59 @@ pub async fn repair_and_restart(app: AppHandle) -> Result<()> {
             ),
         },
     );
+
+    start(app, cfg).await
+}
+
+pub async fn unlock_and_restart(app: AppHandle) -> Result<()> {
+    // Use last known configuration (same approach as repair_and_restart)
+    let cfg = { LAST_CFG.lock().await.clone() }
+        .ok_or_else(|| anyhow!("no previous miner configuration available"))?;
+
+    let chain_id = chain_id_for_ui(&cfg.chain);
+    let lock_path = node_base_path()?
+        .join("chains")
+        .join(chain_id)
+        .join("db")
+        .join("full")
+        .join("LOCK");
+
+    let _ = app.emit(
+        "miner:log",
+        &LogMsg {
+            source: "ui",
+            line: format!(
+                "Unlock requested. Stopping node and removing lock file at {} (will restart from current state).",
+                lock_path.display()
+            ),
+        },
+    );
+
+    // Stop first to avoid races while touching the lock file
+    let _ = stop().await;
+
+    if lock_path.exists() {
+        std::fs::remove_file(&lock_path)
+            .map_err(|e| anyhow!("failed to remove LOCK at {}: {e}", lock_path.display()))?;
+        let _ = app.emit(
+            "miner:log",
+            &LogMsg {
+                source: "ui",
+                line: "LOCK file removed. Restarting node...".into(),
+            },
+        );
+    } else {
+        let _ = app.emit(
+            "miner:log",
+            &LogMsg {
+                source: "ui",
+                line: format!(
+                    "No LOCK file found at {}. Restarting node anyway...",
+                    lock_path.display()
+                ),
+            },
+        );
+    }
 
     start(app, cfg).await
 }
