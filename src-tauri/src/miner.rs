@@ -877,118 +877,67 @@ fn spawn_status_task(app: AppHandle) {
                 }
             }
 
-            // Subscribe to bootnode heads to improve progress accuracy
-            if tick % 10 == 0 {
+            // Bootnode highest: maintain a persistent connection/subscription with long timeouts
+            if ws_boot_opt.is_none() {
                 if let Some(chain_name) =
                     { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) }
                 {
                     if let Some(url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
                         bootnode_host = Some(url.to_string());
-                        if let Ok((mut ws_b, _)) = tokio_tungstenite::connect_async(url).await {
-                            bootnode_connected = Some(true);
-                            // Start a short-lived subscription to new heads and read one notification.
-                            let req = serde_json::json!({
-                                "jsonrpc":"2.0","id":4242,"method":"chain_subscribeNewHeads","params":[]
-                            });
-                            let _ = ws_b.send(Message::Text(req.to_string())).await;
-
-                            // First response is usually the subscription id; read it (best-effort).
-                            let mut subscribed = false;
-                            if let Ok(Some(Ok(Message::Text(txt1)))) =
-                                tokio::time::timeout(Duration::from_millis(600), ws_b.next()).await
-                            {
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt1) {
-                                    if val.get("result").is_some() {
-                                        subscribed = true;
-                                    }
-                                }
-                            }
-                            if subscribed {
-                                // Then read the first head notification.
-                                if let Ok(Some(Ok(Message::Text(txt2)))) =
-                                    tokio::time::timeout(Duration::from_millis(900), ws_b.next())
-                                        .await
-                                {
-                                    if let Ok(val) =
-                                        serde_json::from_str::<serde_json::Value>(&txt2)
-                                    {
-                                        if let Some(head) =
-                                            val.get("params").and_then(|p| p.get("result"))
-                                        {
-                                            if let Some(num) =
-                                                head.get("number").and_then(parse_u64_from_json)
-                                            {
-                                                let new_h = match highest {
-                                                    Some(x) => Some(x.max(num)),
-                                                    None => Some(num),
-                                                };
-                                                if new_h != highest {
-                                                    highest = new_h;
-                                                    got_update = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Fallback: call system_syncState once to get highestBlock
-                                let req_sync = serde_json::json!({
-                                    "jsonrpc":"2.0","id":4243,"method":"system_syncState","params":[]
+                        match tokio_tungstenite::connect_async(url).await {
+                            Ok((mut ws_b, _)) => {
+                                bootnode_connected = Some(true);
+                                let req = serde_json::json!({
+                                    "jsonrpc":"2.0","id":4242,"method":"chain_subscribeNewHeads","params":[]
                                 });
-                                let _ = ws_b.send(Message::Text(req_sync.to_string())).await;
-                                if let Ok(Some(Ok(Message::Text(txt2)))) =
-                                    tokio::time::timeout(Duration::from_millis(900), ws_b.next())
-                                        .await
-                                {
-                                    if let Ok(val) =
-                                        serde_json::from_str::<serde_json::Value>(&txt2)
-                                    {
-                                        if let Some(res) = val.get("result") {
-                                            if let Some(h) = res
-                                                .get("highestBlock")
-                                                .and_then(parse_u64_from_json)
-                                            {
-                                                let new_h = match highest {
-                                                    Some(x) => Some(x.max(h)),
-                                                    None => Some(h),
-                                                };
-                                                if new_h != highest {
-                                                    highest = new_h;
-                                                    got_update = true;
-                                                }
-                                            }
-                                        }
+                                let _ = ws_b.send(Message::Text(req.to_string())).await;
+                                ws_boot_opt = Some(ws_b);
+                            }
+                            Err(_) => {
+                                bootnode_connected = Some(false);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Read one message with a long timeout; update highest if we get a head
+                if let Some(ws_b) = ws_boot_opt.as_mut() {
+                    if let Ok(Some(Ok(Message::Text(txt)))) =
+                        tokio::time::timeout(Duration::from_secs(120), ws_b.next()).await
+                    {
+                        if let Ok(val) = serde_json::from_str::&lt;serde_json::Value&gt;(&txt) {
+                            // Ignore initial subscription id result; update on head notifications
+                            if let Some(head) =
+                                val.get("params").and_then(|p| p.get("result"))
+                            {
+                                if let Some(num) = head.get("number").and_then(parse_u64_from_json) {
+                                    let new_h = match highest {
+                                        Some(x) =&gt; Some(x.max(num)),
+                                        None =&gt; Some(num),
+                                    };
+                                    if new_h != highest {
+                                        highest = new_h;
+                                        got_update = true;
                                     }
                                 }
                             }
-                        } else {
-                            // Could not connect to bootnode; record state and log to UI
-                            bootnode_connected = Some(false);
-                            let _ = app.emit(
-                                "miner:log",
-                                &LogMsg {
-                                    source: "ui",
-                                    line: format!("Bootnode connect failed: {}", url),
-                                },
-                            );
                         }
                     }
                 }
             }
 
-            if got_update {
-                let _ = app.emit(
-                    "miner:status",
-                    &MinerStatus {
-                        peers,
-                        current_block: best,
-                        highest_block: highest,
-                        is_syncing,
-                        bootnode_connected,
-                        bootnode_host: bootnode_host.clone(),
-                    },
-                );
-            }
+            // Always emit a snapshot so UI can reflect latest best/highest even if unchanged this tick
+            let _ = app.emit(
+                "miner:status",
+                &MinerStatus {
+                    peers,
+                    current_block: best,
+                    highest_block: highest,
+                    is_syncing,
+                    bootnode_connected,
+                    bootnode_host: bootnode_host.clone(),
+                },
+            );
         }
     });
 }
