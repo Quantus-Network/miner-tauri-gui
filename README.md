@@ -1,6 +1,8 @@
-# Tauri + React + Typescript
+# Quantus Miner
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+This repository contains a Tauri + React + TypeScript desktop application that wraps a PoW Substrate-derived node/miner with post-quantum keys.
+
+- For contributor and agent notes, see the Agents Guide: [agents.md](./agents.md)
 
 ## Recommended IDE Setup
 
