@@ -1,0 +1,121 @@
+name: Release (Tauri)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read versions
+        id: out
+        run: |
+          TAG="${GITHUB_REF##*/}"            # vX.Y.Z
+          VER="${TAG#v}"                     # X.Y.Z
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+          PKG=$(node -p "require('./package.json').version")
+          TAURI=$(jq -r '.package.version' src-tauri/tauri.conf.json)
+          PY='import tomllib,sys;print(tomllib.load(open("src-tauri/Cargo.toml","rb"))["package"]["version"])'
+          CARGO=$(python3 -c "$PY")
+
+          echo "Tag version:    $VER"
+          echo "package.json:    $PKG"
+          echo "tauri.conf.json: $TAURI"
+          echo "Cargo.toml:      $CARGO"
+
+          if [ "$PKG" != "$VER" ] || [ "$TAURI" != "$VER" ] || [ "$CARGO" != "$VER" ]; then
+            echo "❌ Version mismatch; make sure all files match tag v$VER"
+            exit 1
+          fi
+
+      - name: Cache node_modules (primary)
+        uses: actions/cache@v4
+        with:
+          path: |
+            **/node_modules
+            ~/.pnpm-store
+          key: verify-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        continue-on-error: true
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: verify-versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+          - platform: macos-universal
+            os: macos-latest
+          - platform: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # Linux build deps for Tauri/Wry/WebKitGTK
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      # Optional: cache cargo registry/builds to speed repeat builds
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Build & Release with Tauri action
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing (optional; comment out if you don't sign)
+          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }} # e.g. v0.3.2
+          releaseName: "Quantus Miner ${{ github.ref_name }}"
+          releaseBody: "Automated Tauri release for ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # If you want universal mac builds and NSIS on Windows, tauri-action auto-detects from config
