@@ -200,8 +200,133 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
         }
     });
 
+    // spawn a background task that periodically queries the local node JSON-RPC
+    spawn_status_task(app.clone());
     *MINER.lock().await = Some(child);
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MinerStatus {
+    peers: Option<u32>,
+    current_block: Option<u64>,
+    highest_block: Option<u64>,
+    is_syncing: Option<bool>,
+}
+
+/// Attempt to parse a u64 from a JSON value that may be a number or a 0x-prefixed hex string.
+fn parse_u64_from_json(v: &serde_json::Value) -> Option<u64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x") {
+                u64::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse::<u64>().ok()
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Query the local Substrate JSON-RPC (ws://127.0.0.1:9944) for health and sync state.
+async fn query_local_node_status() -> Result<MinerStatus> {
+    let url = "ws://127.0.0.1:9944";
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .map_err(|e| anyhow!("ws connect: {e}"))?;
+
+    // Prepare requests
+    let req_health = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "system_health",
+        "params": []
+    });
+    let req_sync = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "system_syncState",
+        "params": []
+    });
+
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    ws.send(Message::Text(req_health.to_string()))
+        .await
+        .map_err(|e| anyhow!("ws send health: {e}"))?;
+    ws.send(Message::Text(req_sync.to_string()))
+        .await
+        .map_err(|e| anyhow!("ws send syncState: {e}"))?;
+
+    let mut peers: Option<u32> = None;
+    let mut is_syncing: Option<bool> = None;
+    let mut current_block: Option<u64> = None;
+    let mut highest_block: Option<u64> = None;
+
+    // Collect responses with a timeout
+    let _ = tokio::time::timeout(Duration::from_millis(1500), async {
+        while peers.is_none()
+            || current_block.is_none()
+            || highest_block.is_none()
+            || is_syncing.is_none()
+        {
+            match ws.next().await {
+                Some(Ok(Message::Text(txt))) => {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        let id = val.get("id").and_then(|x| x.as_i64()).unwrap_or_default();
+                        let res = val
+                            .get("result")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        if id == 1 {
+                            // system_health
+                            peers = res.get("peers").and_then(|x| x.as_u64()).map(|x| x as u32);
+                            is_syncing = res.get("isSyncing").and_then(|x| x.as_bool());
+                        } else if id == 2 {
+                            // system_syncState
+                            current_block = res.get("currentBlock").and_then(parse_u64_from_json);
+                            highest_block = res.get("highestBlock").and_then(parse_u64_from_json);
+                        }
+                    }
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(_e)) => break,
+                None => break,
+            }
+        }
+    })
+    .await;
+
+    Ok(MinerStatus {
+        peers,
+        current_block,
+        highest_block,
+        is_syncing,
+    })
+}
+
+/// Spawn a repeating background task that emits "miner:status" with peer and height info.
+/// This runs independently of the miner process; if the node is not up yet, it will emit
+/// empty fields until it can connect.
+fn spawn_status_task(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let snap = match query_local_node_status().await {
+                Ok(s) => s,
+                Err(_) => MinerStatus {
+                    peers: None,
+                    current_block: None,
+                    highest_block: None,
+                    is_syncing: None,
+                },
+            };
+            let _ = app.emit("miner:status", &snap);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
 }
 
 pub async fn stop() -> Result<()> {

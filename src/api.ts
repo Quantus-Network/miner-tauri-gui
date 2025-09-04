@@ -25,6 +25,17 @@ export function onMinerLog(cb: (line: string) => void) {
   );
 }
 
+export type MinerStatus = {
+  peers?: number | null;
+  current_block?: number | null;
+  highest_block?: number | null;
+  is_syncing?: boolean | null;
+};
+
+export function onMinerStatus(cb: (s: MinerStatus) => void) {
+  return listen<MinerStatus>("miner:status", (e) => cb(e.payload));
+}
+
 export async function startMiner(
   chain: "resonance" | "heisenberg",
   rewardsAddress: string,

@@ -7,6 +7,8 @@ import {
   onMinerEvent,
   onMinerLog,
   queryBalance,
+  onMinerStatus,
+  type MinerStatus,
 } from "./api";
 import { celebrate } from "./celebrate";
 
@@ -25,6 +27,10 @@ export default function App() {
   const [status, setStatus] = useState<
     "Idle" | "Starting" | "Syncing" | "Mining" | "Repairing" | "Error"
   >("Idle");
+  const [syncBlock, setSyncBlock] = useState<number | null>(null);
+  const [peers, setPeers] = useState<number | null>(null);
+  const [best, setBest] = useState<number | null>(null);
+  const [highest, setHighest] = useState<number | null>(null);
   const [lineLimit, setLineLimit] = useState<number>(400);
   const lineLimitRef = useRef(lineLimit);
 
@@ -56,11 +62,15 @@ export default function App() {
     const un1 = onMinerEvent((ev) => {
       if (ev.type === "Hashrate") {
         setHps(ev.hps);
-        if (ev.hps > 0) setStatus("Mining");
+        if (ev.hps > 0) {
+          setStatus("Mining");
+          setSyncBlock(null);
+        }
       }
       if (ev.type === "FoundBlock") {
         celebrate();
         setStatus("Mining");
+        setSyncBlock(null);
       }
     });
     const un2 = onMinerLog((line) => {
@@ -83,10 +93,11 @@ export default function App() {
       } else if (source === "ui" && l.includes("repair complete")) {
         // After repair, node restarts and will begin syncing
         setStatus("Syncing");
-      } else if (
-        l.includes("importing block") ||
-        l.includes("total chain work")
-      ) {
+      } else if (l.includes("importing block")) {
+        const mBlock = body.match(/importing block\s+#(\d+)/i);
+        if (mBlock) setSyncBlock(Number(mBlock[1]));
+        setStatus("Syncing");
+      } else if (l.includes("total chain work")) {
         setStatus("Syncing");
       } else if (source === "stderr" && l.includes("error")) {
         setStatus("Error");
@@ -99,9 +110,23 @@ export default function App() {
         return base.concat(line);
       });
     });
+    const un3 = onMinerStatus((s: MinerStatus) => {
+      if (typeof s.peers === "number") setPeers(s.peers);
+      if (typeof s.current_block === "number") {
+        setBest(s.current_block);
+        // In case RPC provides better signal, prefer RPC over log parsing.
+        setStatus("Syncing");
+      }
+      if (typeof s.highest_block === "number") setHighest(s.highest_block);
+      if (typeof s.is_syncing === "boolean" && !s.is_syncing) {
+        // If RPC says not syncing and we have hashrate elsewhere, UI will move to Mining.
+        setSyncBlock(null);
+      }
+    });
     return () => {
       un1.then((u) => u());
       un2.then((u) => u());
+      un3.then((u) => u());
     };
   }, []);
 
@@ -113,6 +138,7 @@ export default function App() {
     }
     try {
       setStatus("Starting");
+      setSyncBlock(null);
       await startMiner(c, account.address, minerPath, []);
       setMining(true);
     } catch (err: any) {
@@ -128,6 +154,7 @@ export default function App() {
       await stopMiner();
       setMining(false);
       setStatus("Idle");
+      setSyncBlock(null);
     } catch (err: any) {
       showToast(
         err?.message
@@ -163,23 +190,33 @@ export default function App() {
 
   return (
     <div className="p-6 max-w-3xl mx-auto font-sans">
-      <div
-        className={`fixed top-4 right-4 z-40 rounded-full px-3 py-1 text-xs font-semibold shadow ${
-          status === "Mining"
-            ? "bg-green-600 text-white"
-            : status === "Syncing"
-              ? "bg-amber-500 text-black"
-              : status === "Starting"
-                ? "bg-blue-600 text-white"
-                : status === "Repairing"
-                  ? "bg-purple-600 text-white"
-                  : status === "Error"
-                    ? "bg-red-600 text-white"
-                    : "bg-gray-500 text-white"
-        }`}
-        title="Miner status"
-      >
-        {status}
+      <div className="fixed top-4 right-4 z-40 flex items-center gap-2">
+        <div
+          className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
+            status === "Mining"
+              ? "bg-green-600 text-white"
+              : status === "Syncing"
+                ? "bg-amber-500 text-black"
+                : status === "Starting"
+                  ? "bg-blue-600 text-white"
+                  : status === "Repairing"
+                    ? "bg-purple-600 text-white"
+                    : status === "Error"
+                      ? "bg-red-600 text-white"
+                      : "bg-gray-500 text-white"
+          }`}
+          title="Miner status"
+        >
+          {status === "Syncing" && syncBlock ? `Syncing #${syncBlock}` : status}
+        </div>
+        <div
+          className="rounded-full px-3 py-1 text-xs font-semibold bg-black/80 text-white shadow"
+          title="Peers / Best / Highest from local node (RPC)"
+        >
+          {typeof peers === "number" ? `${peers} peers` : "— peers"} ·{" "}
+          {typeof best === "number" ? `#${best}` : "#—"} /{" "}
+          {typeof highest === "number" ? `#${highest}` : "#—"}
+        </div>
       </div>
       <h1 className="text-2xl font-bold mb-2">Quantus Miner (Demo)</h1>
       <p className="opacity-70 mb-6">
