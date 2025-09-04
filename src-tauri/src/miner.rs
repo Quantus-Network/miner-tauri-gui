@@ -179,7 +179,14 @@ lazy_static! {
     static ref MINER: Mutex<Option<tokio::process::Child>> = Mutex::new(None);
     static ref LAST_CFG: Mutex<Option<MinerConfig>> = Mutex::new(None);
     static ref REPAIRING: Mutex<bool> = Mutex::new(false);
+    // When true, we are currently running with '--max-blocks-per-request 1'
+    static ref SAFE_MODE_ACTIVE: Mutex<bool> = Mutex::new(false);
+    // A pending request to enable/disable safe mode detected by the stderr reader.
+    static ref SAFE_MODE_PENDING: Mutex<Option<bool>> = Mutex::new(None);
 }
+
+// Troublesome block ranges per chain. For Resonance: heavy blocks around 13311..=13360.
+const RESONANCE_TROUBLESOME_RANGES: &[(u64, u64)] = &[(13311, 13360)];
 
 // --- Node key helpers ---
 // Base data dir used by quantus-node, e.g. on Linux: ~/.local/share/quantus-node
@@ -404,6 +411,62 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 },
             );
 
+            // Safe sync mode automation:
+            // Detect current importing block and set a pending toggle for safe mode.
+            // The actual restart/toggle is performed in the status task to keep this future Send-friendly.
+            if let Some(pos) = low.find("importing block #") {
+                let after = &low[pos + "importing block #".len()..];
+                let mut num_str = String::new();
+                for ch in after.chars() {
+                    if ch.is_ascii_digit() {
+                        num_str.push(ch);
+                    } else {
+                        break;
+                    }
+                }
+                if let Ok(cur_block) = num_str.parse::<u64>() {
+                    // Determine chain to select applicable ranges
+                    let chain_ui = { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) };
+                    if let Some(chain_name) = chain_ui {
+                        let ranges: &[(u64, u64)] = match chain_name.as_str() {
+                            "resonance" => RESONANCE_TROUBLESOME_RANGES,
+                            _ => &[],
+                        };
+                        // Are we inside any troublesome range?
+                        let in_range = ranges
+                            .iter()
+                            .any(|(s, e)| cur_block >= *s && cur_block <= *e);
+                        let past_all = ranges.iter().all(|(_, e)| cur_block > *e);
+                        let approaching = ranges.iter().any(|(s, _)| cur_block >= *s);
+
+                        let active_now = { *SAFE_MODE_ACTIVE.lock().await };
+                        // Request enable when approaching/in-range and not yet active
+                        if !active_now && (in_range || approaching) {
+                            let mut pend = SAFE_MODE_PENDING.lock().await;
+                            *pend = Some(true);
+                            let _ = app_clone.emit(
+                                "miner:log",
+                                &LogMsg {
+                                    source: "ui",
+                                    line: format!("Approaching heavy blocks at #{cur_block}. Scheduling safe sync enable (--max-blocks-per-request 1)..."),
+                                },
+                            );
+                        // Request disable when past all ranges and currently active
+                        } else if active_now && past_all {
+                            let mut pend = SAFE_MODE_PENDING.lock().await;
+                            *pend = Some(false);
+                            let _ = app_clone.emit(
+                                "miner:log",
+                                &LogMsg {
+                                    source: "ui",
+                                    line: format!("Past heavy block range(s) at #{cur_block}. Scheduling safe sync disable..."),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
             // Update and emit miner meta if this line contains interesting info.
             if update_meta_from_line(&mut meta, &line) {
                 let _ = app_clone.emit("miner:meta", &meta);
@@ -533,7 +596,8 @@ async fn query_local_node_status() -> Result<MinerStatus> {
     })
 }
 
-/// Spawn a repeating background task that emits "miner:status" with peer and height info.
+/// Spawn a repeating background task that emits "miner:status" with peer and height info,
+/// and performs pending safe-mode toggles requested by the stderr task.
 /// This runs independently of the miner process; if the node is not up yet, it will emit
 /// empty fields until it can connect.
 fn spawn_status_task(app: AppHandle) {
@@ -556,6 +620,12 @@ fn spawn_status_task(app: AppHandle) {
         let mut tick: u32 = 0;
 
         loop {
+            // Handle any pending safe-mode toggle (set by stderr reader)
+            if let Some(pending) = { SAFE_MODE_PENDING.lock().await.take() } {
+                // Perform toggle here (this future runs under tauri async spawn and is Send)
+                let _ = set_safe_mode(app.clone(), pending).await;
+            }
+
             // Ensure WS connection to local node JSON-RPC
             if ws_opt.is_none() {
                 if let Ok((ws, _)) =
@@ -789,6 +859,71 @@ pub async fn repair_and_restart(app: AppHandle) -> Result<()> {
     );
 
     start(app, cfg).await
+}
+
+// Toggle safe mode by restarting with/without '--max-blocks-per-request 1'
+async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
+    // Avoid redundant work
+    {
+        let active = SAFE_MODE_ACTIVE.lock().await.clone();
+        if active == enable {
+            return Ok(());
+        }
+    }
+
+    // Read last cfg
+    let mut cfg = {
+        let lock = LAST_CFG.lock().await;
+        lock.clone()
+    }
+    .ok_or_else(|| anyhow!("no previous miner configuration available"))?;
+
+    // Adjust extra_args
+    if enable {
+        if !has_max_blocks_arg(&cfg.extra_args) {
+            cfg.extra_args.push("--max-blocks-per-request".into());
+            cfg.extra_args.push("1".into());
+        }
+    } else {
+        remove_max_blocks_arg(&mut cfg.extra_args);
+    }
+
+    // Stop and restart
+    let _ = stop().await;
+    start(app.clone(), cfg).await?;
+    // Mark state
+    {
+        let mut active = SAFE_MODE_ACTIVE.lock().await;
+        *active = enable;
+    }
+    Ok(())
+}
+
+fn has_max_blocks_arg(args: &Vec<String>) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--max-blocks-per-request" {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn remove_max_blocks_arg(args: &mut Vec<String>) {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--max-blocks-per-request" {
+            // remove flag and possible value
+            args.remove(i);
+            if i < args.len() && args[i] != "--" {
+                // best-effort: remove next token (value)
+                args.remove(i);
+            }
+            continue;
+        }
+        i += 1;
+    }
 }
 
 pub async fn unlock_and_restart(app: AppHandle) -> Result<()> {
