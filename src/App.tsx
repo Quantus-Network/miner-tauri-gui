@@ -430,6 +430,19 @@ export default function App() {
           >
             Copy
           </button>
+          <button
+            className="rounded px-2 py-1 border text-xs"
+            title="Clear captured node info (kept across restarts)"
+            onClick={() => {
+              try {
+                localStorage.removeItem("qm.meta");
+              } catch {}
+              setMeta({});
+              showToast("Node info reset");
+            }}
+          >
+            Reset
+          </button>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
           {meta?.version && (
@@ -580,6 +593,42 @@ export default function App() {
             value={lineLimit}
             onChange={(e) => setLineLimit(Number(e.target.value) || 0)}
           />
+          <button
+            className="rounded px-2 py-1 border text-xs"
+            title="Clear console and forget stored lines"
+            onClick={() => {
+              setLogs([]);
+              try {
+                localStorage.removeItem("qm.logs");
+              } catch {}
+            }}
+          >
+            Clear
+          </button>
+          <button
+            className="rounded px-2 py-1 border text-xs"
+            title="Export console to a text file"
+            onClick={() => {
+              try {
+                const data = logs.join("\n");
+                const blob = new Blob([data], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `quantus-logs-${new Date()
+                  .toISOString()
+                  .replace(/[:.]/g, "-")}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                console.error("Export logs failed", e);
+              }
+            }}
+          >
+            Export
+          </button>
         </div>
         <pre className="h-48 overflow-auto text-xs leading-tight bg-black text-green-300 p-3 rounded-md">
           {logs.join("\n")}

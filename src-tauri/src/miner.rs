@@ -295,7 +295,8 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     ];
     args.extend(cfg.extra_args.clone());
 
-    let mut cmd = Command::new(cfg.binary_path);
+    let bin_path = cfg.binary_path.clone();
+    let mut cmd = Command::new(&bin_path);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -310,7 +311,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     let _ = app.emit(
         "miner:meta",
         &MinerMeta {
-            binary: Some(cfg.binary_path.clone()),
+            binary: Some(bin_path.clone()),
             chain: Some(cfg.chain.clone()),
             rewards_address: Some(acct.address.clone()),
             ..Default::default()
@@ -489,49 +490,131 @@ fn spawn_status_task(app: AppHandle) {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
+        let mut best: Option<u64> = None;
+        let mut highest: Option<u64> = None;
+        let mut peers: Option<u32> = None;
+        let mut is_syncing: Option<bool> = None;
+
+        // Keep a WS connection + subscription to local node heads; periodically poll health
+        let mut sub_id: Option<String> = None;
+        let mut ws_opt: Option<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        > = None;
+        let mut tick: u32 = 0;
+
         loop {
-            // 1) Query local node for current/height/peers
-            let mut snap = match query_local_node_status().await {
-                Ok(s) => s,
-                Err(_) => MinerStatus {
-                    peers: None,
-                    current_block: None,
-                    highest_block: None,
-                    is_syncing: None,
-                },
-            };
+            // Ensure WS connection to local node JSON-RPC
+            if ws_opt.is_none() {
+                if let Ok((ws, _)) =
+                    tokio_tungstenite::connect_async(crate::rpc::local_ws_endpoint()).await
+                {
+                    ws_opt = Some(ws);
+                    sub_id = None;
+                } else {
+                    // Emit whatever we have and retry shortly
+                    let _ = app.emit(
+                        "miner:status",
+                        &MinerStatus {
+                            peers,
+                            current_block: best,
+                            highest_block: highest,
+                            is_syncing,
+                        },
+                    );
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    continue;
+                }
+            }
 
-            // 2) If we know which chain we're on, consult the bootnode for the highest height
-            //    and merge that into our view so progress can be computed accurately.
-            let chain_ui = { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) };
-            if let Some(chain_name) = chain_ui {
-                if let Some(ws_url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
-                    if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(ws_url).await {
-                        let req_sync = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": 42,
-                            "method": "system_syncState",
-                            "params": []
-                        });
-                        // best-effort request
-                        let _ = ws.send(Message::Text(req_sync.to_string())).await;
+            let ws = ws_opt.as_mut().unwrap();
 
-                        // read one response with a timeout
-                        if let Ok(Some(Ok(Message::Text(txt)))) =
-                            tokio::time::timeout(Duration::from_millis(1500), ws.next()).await
-                        {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
-                                let res = val
-                                    .get("result")
-                                    .cloned()
-                                    .unwrap_or(serde_json::Value::Null);
-                                if let Some(h) =
-                                    res.get("highestBlock").and_then(|v| parse_u64_from_json(v))
-                                {
-                                    snap.highest_block = match snap.highest_block {
-                                        Some(local_h) => Some(local_h.max(h)),
-                                        None => Some(h),
-                                    };
+            // Ensure subscription to new heads
+            if sub_id.is_none() {
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1001,
+                    "method": "chain_subscribeNewHeads",
+                    "params": []
+                });
+                if ws.send(Message::Text(req.to_string())).await.is_err() {
+                    ws_opt = None;
+                    continue;
+                }
+                // Wait for subscription id
+                if let Ok(Some(Ok(Message::Text(txt)))) =
+                    tokio::time::timeout(Duration::from_millis(1500), ws.next()).await
+                {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        if let Some(idv) = val.get("result") {
+                            if let Some(s) = idv.as_str() {
+                                sub_id = Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Read one message with a small timeout; update best height on new head
+            let mut got_update = false;
+            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(400), ws.next()).await
+            {
+                match msg {
+                    Ok(Message::Text(txt)) => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                            // Subscription notification carries "params.result"
+                            let head = val
+                                .get("params")
+                                .and_then(|p| p.get("result"))
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    val.get("result")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null)
+                                });
+                            if let Some(numv) = head.get("number") {
+                                if let Some(n) = parse_u64_from_json(numv) {
+                                    if best != Some(n) {
+                                        best = Some(n);
+                                        got_update = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        // Connection dropped; reconnect
+                        ws_opt = None;
+                        continue;
+                    }
+                }
+            }
+
+            // Periodic health polling (peers, isSyncing)
+            tick = tick.wrapping_add(1);
+            if tick % 5 == 0 {
+                let req_health = serde_json::json!({
+                    "jsonrpc":"2.0","id":2001,"method":"system_health","params":[]
+                });
+                let _ = ws.send(Message::Text(req_health.to_string())).await;
+                if let Ok(Some(Ok(Message::Text(txt)))) =
+                    tokio::time::timeout(Duration::from_millis(600), ws.next()).await
+                {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        if let Some(res) = val.get("result") {
+                            if let Some(p) = res.get("peers").and_then(|x| x.as_u64()) {
+                                let np = p as u32;
+                                if peers != Some(np) {
+                                    peers = Some(np);
+                                    got_update = true;
+                                }
+                            }
+                            if let Some(s) = res.get("isSyncing").and_then(|x| x.as_bool()) {
+                                if is_syncing != Some(s) {
+                                    is_syncing = Some(s);
+                                    got_update = true;
                                 }
                             }
                         }
@@ -539,10 +622,53 @@ fn spawn_status_task(app: AppHandle) {
                 }
             }
 
-            // 3) Emit consolidated status snapshot for the UI
-            let _ = app.emit("miner:status", &snap);
+            // Periodically refresh highest height via bootnode to improve progress accuracy
+            if tick % 10 == 0 {
+                if let Some(chain_name) =
+                    { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) }
+                {
+                    if let Some(url) = crate::rpc::bootnode_ws_for_chain(chain_name.as_str()) {
+                        if let Ok((mut ws_b, _)) = tokio_tungstenite::connect_async(url).await {
+                            let req = serde_json::json!({
+                                "jsonrpc":"2.0","id":42,"method":"system_syncState","params":[]
+                            });
+                            let _ = ws_b.send(Message::Text(req.to_string())).await;
+                            if let Ok(Some(Ok(Message::Text(txt)))) =
+                                tokio::time::timeout(Duration::from_millis(900), ws_b.next()).await
+                            {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                                    if let Some(res) = val.get("result") {
+                                        if let Some(h) =
+                                            res.get("highestBlock").and_then(parse_u64_from_json)
+                                        {
+                                            let new_h = match highest {
+                                                Some(x) => Some(x.max(h)),
+                                                None => Some(h),
+                                            };
+                                            if new_h != highest {
+                                                highest = new_h;
+                                                got_update = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            if got_update {
+                let _ = app.emit(
+                    "miner:status",
+                    &MinerStatus {
+                        peers,
+                        current_block: best,
+                        highest_block: highest,
+                        is_syncing,
+                    },
+                );
+            }
         }
     });
 }
