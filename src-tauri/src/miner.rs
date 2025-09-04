@@ -628,6 +628,7 @@ struct MinerStatus {
     is_syncing: Option<bool>,
     bootnode_connected: Option<bool>,
     bootnode_host: Option<String>,
+    bootnode_stale_secs: Option<u64>,
 }
 
 /// Attempt to parse a u64 from a JSON value that may be a number or a 0x-prefixed hex string.
@@ -750,6 +751,13 @@ fn spawn_status_task(app: AppHandle) {
             >,
         > = None;
         let mut tick: u32 = 0;
+        // persistent bootnode ws and last update tracking
+        let mut ws_boot_opt: Option<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        > = None;
+        let mut last_bootnode_update: Option<std::time::Instant> = None;
 
         loop {
             // Handle any pending safe-mode toggle (set by stderr reader)
@@ -776,6 +784,9 @@ fn spawn_status_task(app: AppHandle) {
                             is_syncing,
                             bootnode_connected,
                             bootnode_host: bootnode_host.clone(),
+                            bootnode_stale_secs: last_bootnode_update
+                                .map(|t| t.elapsed().as_secs())
+                                .or(Some(u64::MAX)),
                         },
                     );
                     tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -892,6 +903,8 @@ fn spawn_status_task(app: AppHandle) {
                                 });
                                 let _ = ws_b.send(Message::Text(req.to_string())).await;
                                 ws_boot_opt = Some(ws_b);
+                                // mark connection time as last update baseline (no head yet)
+                                last_bootnode_update = Some(std::time::Instant::now());
                             }
                             Err(_) => {
                                 bootnode_connected = Some(false);
@@ -900,25 +913,25 @@ fn spawn_status_task(app: AppHandle) {
                     }
                 }
             } else {
-                // Read one message with a long timeout; update highest if we get a head
+                // Poll bootnode subscription in a non-blocking way: 1s timeout per loop
                 if let Some(ws_b) = ws_boot_opt.as_mut() {
                     if let Ok(Some(Ok(Message::Text(txt)))) =
-                        tokio::time::timeout(Duration::from_secs(120), ws_b.next()).await
+                        tokio::time::timeout(Duration::from_secs(1), ws_b.next()).await
                     {
-                        if let Ok(val) = serde_json::from_str::&lt;serde_json::Value&gt;(&txt) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
                             // Ignore initial subscription id result; update on head notifications
-                            if let Some(head) =
-                                val.get("params").and_then(|p| p.get("result"))
-                            {
-                                if let Some(num) = head.get("number").and_then(parse_u64_from_json) {
+                            if let Some(head) = val.get("params").and_then(|p| p.get("result")) {
+                                if let Some(num) = head.get("number").and_then(parse_u64_from_json)
+                                {
                                     let new_h = match highest {
-                                        Some(x) =&gt; Some(x.max(num)),
-                                        None =&gt; Some(num),
+                                        Some(x) => Some(x.max(num)),
+                                        None => Some(num),
                                     };
                                     if new_h != highest {
                                         highest = new_h;
                                         got_update = true;
                                     }
+                                    last_bootnode_update = Some(std::time::Instant::now());
                                 }
                             }
                         }
@@ -936,6 +949,7 @@ fn spawn_status_task(app: AppHandle) {
                     is_syncing,
                     bootnode_connected,
                     bootnode_host: bootnode_host.clone(),
+                    bootnode_stale_secs: last_bootnode_update.map(|t| t.elapsed().as_secs()),
                 },
             );
         }

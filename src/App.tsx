@@ -51,6 +51,9 @@ export default function App() {
     null,
   );
   const [bootnodeHost, setBootnodeHost] = useState<string>("");
+  const [bootnodeStaleSecs, setBootnodeStaleSecs] = useState<number | null>(
+    null,
+  );
   const [meta, setMeta] = useState<Partial<MinerMeta>>(() => {
     try {
       const s = localStorage.getItem("qm.meta");
@@ -245,6 +248,9 @@ export default function App() {
         if (typeof s.bootnode_host === "string") {
           setBootnodeHost(s.bootnode_host);
         }
+        if (typeof (s as any).bootnode_stale_secs === "number") {
+          setBootnodeStaleSecs((s as any).bootnode_stale_secs as number);
+        }
       },
     );
     const un4 = onMinerMeta((m: MinerMeta) => {
@@ -408,13 +414,24 @@ export default function App() {
               title={
                 bootnodeConnected === false
                   ? "Bootnode unreachable"
-                  : `Connected to ${bootnodeHost}`
+                  : `Connected to ${bootnodeHost}${
+                      typeof bootnodeStaleSecs === "number"
+                        ? ` • last head ${Math.floor(
+                            bootnodeStaleSecs / 60,
+                          )}m ${bootnodeStaleSecs % 60}s ago`
+                        : ""
+                    }`
               }
             >
               {bootnodeConnected === false
                 ? "Bootnode: offline"
                 : `Connected: ${
                     bootnodeHost.replace(/^wss?:\/\//, "").split("/")[0]
+                  }${
+                    typeof bootnodeStaleSecs === "number" &&
+                    bootnodeStaleSecs > 180
+                      ? " (stale)"
+                      : ""
                   }`}
             </div>
           ) : null}
