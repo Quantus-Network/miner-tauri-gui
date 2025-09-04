@@ -540,66 +540,6 @@ export default function App() {
                 </div>
               </div>
             )}
-            {meta?.os && (
-              <div>
-                <span className="opacity-70">OS</span>
-                <div className="font-mono break-all">{meta.os}</div>
-              </div>
-            )}
-            {meta?.arch && (
-              <div>
-                <span className="opacity-70">Arch</span>
-                <div className="font-mono break-all">{meta.arch}</div>
-              </div>
-            )}
-            {meta?.target && (
-              <div>
-                <span className="opacity-70">Target</span>
-                <div className="font-mono break-all">{meta.target}</div>
-              </div>
-            )}
-            {meta?.cpu && (
-              <div className="col-span-2">
-                <span className="opacity-70">CPU</span>
-                <div className="font-mono break-all">{meta.cpu}</div>
-              </div>
-            )}
-            {typeof meta?.cpu_cores === "number" && (
-              <div>
-                <span className="opacity-70">CPU cores</span>
-                <div className="font-mono break-all">{meta.cpu_cores}</div>
-              </div>
-            )}
-            {meta?.memory && (
-              <div>
-                <span className="opacity-70">Memory</span>
-                <div className="font-mono break-all">{meta.memory}</div>
-              </div>
-            )}
-            {meta?.kernel && (
-              <div>
-                <span className="opacity-70">Kernel</span>
-                <div className="font-mono break-all">{meta.kernel}</div>
-              </div>
-            )}
-            {meta?.distro && (
-              <div className="col-span-2">
-                <span className="opacity-70">Distro</span>
-                <div className="font-mono break-all">{meta.distro}</div>
-              </div>
-            )}
-            {meta?.vm && (
-              <div>
-                <span className="opacity-70">VM</span>
-                <div className="font-mono break-all">{meta.vm}</div>
-              </div>
-            )}
-            {meta?.binary && (
-              <div className="col-span-2">
-                <span className="opacity-70">Binary</span>
-                <div className="font-mono break-all">{meta.binary}</div>
-              </div>
-            )}
             <div className="col-span-2">
               <span className="opacity-70">Rewards address</span>
               <div className="font-mono break-all">
@@ -607,6 +547,69 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Collapsible advanced system details */}
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs opacity-70 hover:opacity-100">
+              System details
+            </summary>
+            <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+              {meta?.os && (
+                <div>
+                  <span className="opacity-70">OS</span>
+                  <div className="font-mono break-all">{meta.os}</div>
+                </div>
+              )}
+              {meta?.arch && (
+                <div>
+                  <span className="opacity-70">Arch</span>
+                  <div className="font-mono break-all">{meta.arch}</div>
+                </div>
+              )}
+              {meta?.target && (
+                <div>
+                  <span className="opacity-70">Target</span>
+                  <div className="font-mono break-all">{meta.target}</div>
+                </div>
+              )}
+              {meta?.cpu && (
+                <div className="col-span-2">
+                  <span className="opacity-70">CPU</span>
+                  <div className="font-mono break-all">{meta.cpu}</div>
+                </div>
+              )}
+              {typeof meta?.cpu_cores === "number" && (
+                <div>
+                  <span className="opacity-70">CPU cores</span>
+                  <div className="font-mono break-all">{meta.cpu_cores}</div>
+                </div>
+              )}
+              {meta?.memory && (
+                <div>
+                  <span className="opacity-70">Memory</span>
+                  <div className="font-mono break-all">{meta.memory}</div>
+                </div>
+              )}
+              {meta?.kernel && (
+                <div>
+                  <span className="opacity-70">Kernel</span>
+                  <div className="font-mono break-all">{meta.kernel}</div>
+                </div>
+              )}
+              {meta?.distro && (
+                <div className="col-span-2">
+                  <span className="opacity-70">Distro</span>
+                  <div className="font-mono break-all">{meta.distro}</div>
+                </div>
+              )}
+              {meta?.vm && (
+                <div>
+                  <span className="opacity-70">VM</span>
+                  <div className="font-mono break-all">{meta.vm}</div>
+                </div>
+              )}
+            </div>
+          </details>
         </div>
 
         <div className="rounded-2xl shadow p-4 mb-4 border flex flex-wrap gap-3 items-start">
