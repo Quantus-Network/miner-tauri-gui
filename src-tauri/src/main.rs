@@ -26,6 +26,8 @@ fn main() {
             select_chain,
             repair_miner,
             unlock_miner,
+            get_safe_ranges,
+            set_safe_ranges,
         ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {

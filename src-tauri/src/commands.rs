@@ -88,7 +88,12 @@ pub async fn start_miner(app: AppHandle, args: StartMinerArgs) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn stop_miner() -> Result<(), String> {
+pub async fn stop_miner(app: AppHandle) -> Result<(), String> {
+    // Inform UI immediately that we're stopping so buttons flip without waiting.
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": false, "phase": "stopped" }),
+    );
     miner::stop().await.map_err(|e| e.to_string())
 }
 
@@ -140,4 +145,40 @@ pub async fn unlock_miner(app: AppHandle) -> Result<(), String> {
     miner::unlock_and_restart(app)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SafeRangesPayload {
+    pub chains: std::collections::HashMap<String, Vec<[u64; 2]>>,
+}
+
+#[tauri::command]
+pub async fn get_safe_ranges(app: AppHandle) -> Result<SafeRangesPayload, String> {
+    // Read from current in-memory map built by miner.rs at start() time.
+    let map = {
+        let guard = crate::miner::SAFE_RANGES.lock().await;
+        guard.clone()
+    };
+    let mut chains: std::collections::HashMap<String, Vec<[u64; 2]>> =
+        std::collections::HashMap::new();
+    for (k, v) in map {
+        chains.insert(k, v.into_iter().map(|(a, b)| [a, b]).collect());
+    }
+    Ok(SafeRangesPayload { chains })
+}
+
+#[tauri::command]
+pub async fn set_safe_ranges(app: AppHandle, payload: SafeRangesPayload) -> Result<(), String> {
+    // Convert payload to internal format and save to disk, then update memory map.
+    let mut new_map: std::collections::HashMap<String, Vec<(u64, u64)>> =
+        std::collections::HashMap::new();
+    for (k, ranges) in payload.chains {
+        new_map.insert(k, ranges.into_iter().map(|p| (p[0], p[1])).collect());
+    }
+    crate::miner::save_safe_ranges(&app, &new_map).map_err(|e| e.to_string())?;
+    {
+        let mut guard = crate::miner::SAFE_RANGES.lock().await;
+        *guard = new_map;
+    }
+    Ok(())
 }

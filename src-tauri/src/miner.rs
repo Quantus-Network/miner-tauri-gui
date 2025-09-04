@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use lazy_static::lazy_static;
-use serde::Serialize;
-use std::{process::Stdio, time::Duration};
-use tauri::{AppHandle, Emitter};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs, path::PathBuf, process::Stdio, time::Duration};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -183,10 +183,92 @@ lazy_static! {
     static ref SAFE_MODE_ACTIVE: Mutex<bool> = Mutex::new(false);
     // A pending request to enable/disable safe mode detected by the stderr reader.
     static ref SAFE_MODE_PENDING: Mutex<Option<bool>> = Mutex::new(None);
+    // Per-chain troublesome ranges (loaded/saved from a simple JSON file in app data dir).
+    pub static ref SAFE_RANGES: Mutex<std::collections::HashMap<String, Vec<(u64, u64)>>> =
+        Mutex::new(load_safe_ranges_or_default());
+}
+
+// Helpers for per-chain safe-ranges persistence (JSON at data_dir/quantus-miner/safe_ranges.json)
+fn default_safe_ranges() -> HashMap<String, Vec<(u64, u64)>> {
+    let mut m: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
+    // Resonance: performance test produced heavy blocks in this window.
+    m.insert("resonance".to_string(), vec![(13311, 13360)]);
+    m
+}
+
+// Global config path (without requiring an AppHandle), used for early initialization.
+fn safe_ranges_config_path_global() -> Option<PathBuf> {
+    dirs::data_dir().map(|p| p.join("quantus-miner").join("safe_ranges.json"))
+}
+
+#[derive(Deserialize, Serialize)]
+struct SafeRangesFile {
+    // map: chain -> [ [start, end], ... ]
+    chains: HashMap<String, Vec<[u64; 2]>>,
+}
+
+// Load ranges from global config; fall back to defaults on error.
+fn load_safe_ranges_or_default() -> HashMap<String, Vec<(u64, u64)>> {
+    if let Some(cfg) = safe_ranges_config_path_global() {
+        if let Ok(bytes) = fs::read(&cfg) {
+            if let Ok(sr) = serde_json::from_slice::<SafeRangesFile>(&bytes) {
+                let mut out: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
+                for (k, ranges) in sr.chains {
+                    let v = ranges.into_iter().map(|p| (p[0], p[1])).collect();
+                    out.insert(k, v);
+                }
+                return out;
+            }
+        }
+    }
+    default_safe_ranges()
+}
+
+// App-specific config path (uses app data dir).
+fn safe_ranges_config_path_app(app: &AppHandle) -> Option<PathBuf> {
+    match app.path().app_data_dir() {
+        Ok(p) => Some(p.join("safe_ranges.json")),
+        Err(_) => None,
+    }
+}
+
+// Load ranges preferring the app path; fallback to global path; fallback to defaults.
+fn load_safe_ranges(app: &AppHandle) -> HashMap<String, Vec<(u64, u64)>> {
+    if let Some(p) = safe_ranges_config_path_app(app) {
+        if let Ok(bytes) = fs::read(&p) {
+            if let Ok(sr) = serde_json::from_slice::<SafeRangesFile>(&bytes) {
+                let mut out: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
+                for (k, ranges) in sr.chains {
+                    let v = ranges.into_iter().map(|p| (p[0], p[1])).collect();
+                    out.insert(k, v);
+                }
+                return out;
+            }
+        }
+    }
+    // fallback to global
+    load_safe_ranges_or_default()
+}
+
+// Save ranges to the app data directory (creates parent dirs as needed).
+pub fn save_safe_ranges(app: &AppHandle, map: &HashMap<String, Vec<(u64, u64)>>) -> Result<()> {
+    let mut chains: HashMap<String, Vec<[u64; 2]>> = HashMap::new();
+    for (k, v) in map {
+        chains.insert(k.clone(), v.iter().map(|(a, b)| [*a, *b]).collect());
+    }
+    let to_write = SafeRangesFile { chains };
+    let json = serde_json::to_vec_pretty(&to_write)?;
+    if let Some(path) = safe_ranges_config_path_app(app) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(&path, json)?;
+    }
+    Ok(())
 }
 
 // Troublesome block ranges per chain. For Resonance: heavy blocks around 13311..=13360.
-const RESONANCE_TROUBLESOME_RANGES: &[(u64, u64)] = &[(13311, 13360)];
+const RESONANCE_TROUBLESOME_RANGES: &[(u64, u64)] = &[(13000, 13100), (13300, 13400)];
 
 // --- Node key helpers ---
 // Base data dir used by quantus-node, e.g. on Linux: ~/.local/share/quantus-node
@@ -265,8 +347,20 @@ pub struct MinerConfig {
 }
 
 pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
+    // notify UI that a (re)start is in progress so it can flip Start/Stop buttons
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": false, "phase": "starting" }),
+    );
     // ensure previous child is stopped
     stop().await.ok();
+
+    // load user-defined safe ranges (if any) and update the in-memory map
+    {
+        let loaded = load_safe_ranges(&app);
+        let mut guard = SAFE_RANGES.lock().await;
+        *guard = loaded;
+    }
 
     let acct_path = account_json_path(&app);
     let acct = AccountJson::load_from_file(&acct_path)?;
@@ -353,11 +447,22 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     let _ = app.emit(
         "miner:meta",
         &MinerMeta {
-            binary: Some(bin_path.clone()),
+            binary: Some(cfg.binary_path.clone()),
             chain: Some(cfg.chain.clone()),
             rewards_address: Some(acct.address.clone()),
             ..Default::default()
         },
+    );
+    // include a status snapshot that also carries safe mode
+    let _ = app.emit(
+        "miner:status",
+        &serde_json::json!({
+            "peers": null,
+            "current_block": null,
+            "highest_block": null,
+            "is_syncing": null,
+            "safe_mode": *SAFE_MODE_ACTIVE.lock().await
+        }),
     );
 
     let app_clone = app.clone();
@@ -428,20 +533,36 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                     // Determine chain to select applicable ranges
                     let chain_ui = { LAST_CFG.lock().await.as_ref().map(|c| c.chain.clone()) };
                     if let Some(chain_name) = chain_ui {
-                        let ranges: &[(u64, u64)] = match chain_name.as_str() {
-                            "resonance" => RESONANCE_TROUBLESOME_RANGES,
-                            _ => &[],
+                        // Load ranges for current chain from settings (fallback to default map)
+                        let ranges_vec = {
+                            let map = SAFE_RANGES.lock().await;
+                            map.get(chain_name.as_str()).cloned().unwrap_or_else(|| {
+                                default_safe_ranges()
+                                    .get(chain_name.as_str())
+                                    .cloned()
+                                    .unwrap_or_default()
+                            })
                         };
+                        let ranges_slice: Vec<(u64, u64)> = ranges_vec;
+                        let ranges = &ranges_slice;
                         // Are we inside any troublesome range?
                         let in_range = ranges
                             .iter()
                             .any(|(s, e)| cur_block >= *s && cur_block <= *e);
-                        let past_all = ranges.iter().all(|(_, e)| cur_block > *e);
-                        let approaching = ranges.iter().any(|(s, _)| cur_block >= *s);
+                        // Consider "past_all" only when we're clearly beyond the end of all ranges
+                        // by a safety margin to avoid flapping near the boundary.
+                        let safety_margin: u64 = 50;
+                        let past_all = ranges.iter().all(|(_, e)| cur_block > (*e + safety_margin));
+                        // Only treat as "approaching" within a pre-window before the first start of any range,
+                        // and not after we've already passed all ranges.
+                        let pre_window: u64 = 100;
+                        let min_start = ranges.iter().map(|(s, _)| *s).min().unwrap_or(u64::MAX);
+                        let approaching =
+                            !past_all && cur_block >= min_start.saturating_sub(pre_window);
 
                         let active_now = { *SAFE_MODE_ACTIVE.lock().await };
                         // Request enable when approaching/in-range and not yet active
-                        if !active_now && (in_range || approaching) {
+                        if !active_now && in_range {
                             let mut pend = SAFE_MODE_PENDING.lock().await;
                             *pend = Some(true);
                             let _ = app_clone.emit(
@@ -452,7 +573,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                                 },
                             );
                         // Request disable when past all ranges and currently active
-                        } else if active_now && past_all {
+                        } else if active_now && past_all && !in_range {
                             let mut pend = SAFE_MODE_PENDING.lock().await;
                             *pend = Some(false);
                             let _ = app_clone.emit(
@@ -491,6 +612,11 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     // spawn a background task that periodically queries the local node JSON-RPC
     spawn_status_task(app.clone());
     *MINER.lock().await = Some(child);
+    // notify UI that process is now running
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": true, "phase": "running" }),
+    );
     Ok(())
 }
 
@@ -808,6 +934,11 @@ fn spawn_status_task(app: AppHandle) {
 }
 
 pub async fn stop() -> Result<()> {
+    // notify UI that a stop is requested
+    if let Some(_) = MINER.lock().await.as_ref() {
+        // best-effort fire before actually killing
+        // we don't have AppHandle here, so we can't emit; state will be confirmed on next start
+    }
     if let Some(mut child) = MINER.lock().await.take() {
         #[cfg(target_family = "unix")]
         {
@@ -839,6 +970,11 @@ pub async fn repair_and_restart(app: AppHandle) -> Result<()> {
             source: "ui",
             line: "Stopping node to repair database...".into(),
         },
+    );
+    // Inform UI immediately that we're stopping to resync so buttons flip.
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": false, "phase": "stopped" }),
     );
     let _ = stop().await;
 
@@ -889,6 +1025,11 @@ async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
     }
 
     // Stop and restart
+    // Inform UI immediately so buttons flip.
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": false, "phase": "stopped" }),
+    );
     let _ = stop().await;
     start(app.clone(), cfg).await?;
     // Mark state
@@ -896,6 +1037,17 @@ async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
         let mut active = SAFE_MODE_ACTIVE.lock().await;
         *active = enable;
     }
+    // Emit status update so UI can show "Safe Sync" badge immediately
+    let _ = app.emit(
+        "miner:status",
+        &serde_json::json!({
+            "peers": null,
+            "current_block": null,
+            "highest_block": null,
+            "is_syncing": null,
+            "safe_mode": enable
+        }),
+    );
     Ok(())
 }
 
@@ -951,6 +1103,11 @@ pub async fn unlock_and_restart(app: AppHandle) -> Result<()> {
     );
 
     // Stop first to avoid races while touching the lock file
+    // Inform UI immediately that we're stopping to unlock so buttons flip.
+    let _ = app.emit(
+        "miner:state",
+        &serde_json::json!({ "running": false, "phase": "stopped" }),
+    );
     let _ = stop().await;
 
     if lock_path.exists() {

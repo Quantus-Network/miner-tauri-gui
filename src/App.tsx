@@ -9,6 +9,7 @@ import {
   queryBalance,
   onMinerStatus,
   onMinerMeta,
+  onMinerState,
   type MinerStatus,
   type MinerMeta,
 } from "./api";
@@ -45,6 +46,7 @@ export default function App() {
   const [peers, setPeers] = useState<number | null>(null);
   const [best, setBest] = useState<number | null>(null);
   const [highest, setHighest] = useState<number | null>(null);
+  const [safeMode, setSafeMode] = useState<boolean>(false);
   const [meta, setMeta] = useState<Partial<MinerMeta>>(() => {
     try {
       const s = localStorage.getItem("qm.meta");
@@ -211,7 +213,7 @@ export default function App() {
         return next;
       });
     });
-    const un3 = onMinerStatus((s: MinerStatus) => {
+    const un3 = onMinerStatus((s: MinerStatus & { safe_mode?: boolean }) => {
       if (typeof s.peers === "number") setPeers(s.peers);
       if (typeof s.current_block === "number") {
         setBest(s.current_block);
@@ -222,6 +224,9 @@ export default function App() {
       if (typeof s.is_syncing === "boolean" && !s.is_syncing) {
         // If RPC says not syncing and we have hashrate elsewhere, UI will move to Mining.
         setSyncBlock(null);
+      }
+      if (typeof s.safe_mode === "boolean") {
+        setSafeMode(s.safe_mode);
       }
     });
     const un4 = onMinerMeta((m: MinerMeta) => {
@@ -241,11 +246,28 @@ export default function App() {
         } catch {}
       }
     });
+    const un5 = onMinerState((s) => {
+      if (typeof s.running === "boolean") {
+        setMining(s.running);
+        try {
+          localStorage.setItem("qm.wasMining", s.running ? "1" : "0");
+        } catch {}
+      }
+      if (s.phase === "starting") {
+        setStatus("Starting");
+      } else if (s.phase === "running") {
+        // leave status inference to events/logs; ensure not idle
+        if (status === "Idle") setStatus("Syncing");
+      } else if (s.phase === "stopped") {
+        setStatus("Idle");
+      }
+    });
     return () => {
       un1.then((u) => u());
       un2.then((u) => u());
       un3.then((u) => u());
       un4.then((u) => u());
+      un5.then((u) => u());
     };
   }, []);
 
@@ -350,6 +372,14 @@ export default function App() {
                   : "Syncing"
               : status}
           </div>
+          {safeMode && (
+            <div
+              className="rounded-full px-3 py-1 text-xs font-semibold shadow bg-purple-700 text-white"
+              title="Safe Sync mode (--max-blocks-per-request 1) is active"
+            >
+              Safe Sync
+            </div>
+          )}
           <div
             className={`rounded-full px-3 py-1 text-xs font-semibold shadow ${
               typeof peers !== "number"

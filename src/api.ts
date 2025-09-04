@@ -31,6 +31,13 @@ export type MinerStatus = {
   highest_block?: number | null;
   is_syncing?: boolean | null;
 };
+export type MinerState = {
+  running?: boolean;
+  phase?: "starting" | "running" | "stopped";
+};
+export function onMinerState(cb: (s: MinerState) => void) {
+  return listen<MinerState>("miner:state", (e) => cb(e.payload));
+}
 
 export function onMinerStatus(cb: (s: MinerStatus) => void) {
   return listen<MinerStatus>("miner:status", (e) => cb(e.payload));
