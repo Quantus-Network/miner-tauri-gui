@@ -20,6 +20,13 @@ export default function App() {
   const [balance, setBalance] = useState<string>("—");
   const [minerPath, setMinerPath] = useState<string>("");
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
+  const [toast, setToast] = useState<string>("");
+
+  function showToast(msg: string) {
+    setToast(msg);
+    // auto-hide after 4 seconds
+    setTimeout(() => setToast(""), 4000);
+  }
 
   useEffect(() => {
     ensureMinerAndAccount().then(({ minerPath, accountJsonPath, account }) => {
@@ -47,13 +54,32 @@ export default function App() {
 
   async function onStart() {
     const c = chain === "quantus" ? "resonance" : chain;
-    if (!account || !minerPath) return;
-    await startMiner(c, account.address, minerPath, []);
-    setMining(true);
+    if (!account || !minerPath) {
+      showToast("Miner not ready yet. Please wait for installer/account.");
+      return;
+    }
+    try {
+      await startMiner(c, account.address, minerPath, []);
+      setMining(true);
+    } catch (err: any) {
+      showToast(
+        err?.message
+          ? `Start failed: ${err.message}`
+          : `Start failed: ${String(err)}`,
+      );
+    }
   }
   async function onStop() {
-    await stopMiner();
-    setMining(false);
+    try {
+      await stopMiner();
+      setMining(false);
+    } catch (err: any) {
+      showToast(
+        err?.message
+          ? `Stop failed: ${err.message}`
+          : `Stop failed: ${String(err)}`,
+      );
+    }
   }
 
   async function refreshBalance() {
@@ -84,7 +110,10 @@ export default function App() {
           onChange={(e) => setChain(e.target.value as Chain)}
         >
           <option value="resonance">Resonance (testnet)</option>
-          <option value="heisenberg">Heisenberg (testnet)</option>
+          <option value="heisenberg" disabled>
+            Heisenberg (testnet – disabled, requires quantus-node
+            0.1.6-98ceb8de72a)
+          </option>
           <option value="quantus" disabled>
             Quantus (mainnet – disabled)
           </option>
@@ -103,7 +132,7 @@ export default function App() {
         <div className="text-sm">
           <div className="opacity-70">Planned command</div>
           <div className="font-mono break-all">
-            {`${minerPath} --chain ${chain === "quantus" ? "resonance" : chain} --rewards-address ${account?.address ?? ""}`}
+            {`${minerPath} --chain ${chain === "quantus" ? "live_resonance" : chain === "resonance" ? "live_resonance" : chain} --rewards-address ${account?.address ?? ""}`}
           </div>
         </div>
 
@@ -139,6 +168,11 @@ export default function App() {
           {logs.join("\n")}
         </pre>
       </div>
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 rounded px-3 py-2 bg-red-600 text-white shadow">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

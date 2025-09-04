@@ -31,9 +31,19 @@ export async function startMiner(
   binaryPath: string,
   extraArgs: string[] = [],
 ) {
-  return await invoke("start_miner", {
-    args: { chain, rewardsAddress, binaryPath, extraArgs },
-  });
+  try {
+    return await invoke("start_miner", {
+      args: {
+        chain,
+        rewards_address: rewardsAddress,
+        binary_path: binaryPath,
+        extra_args: extraArgs,
+      },
+    });
+  } catch (err) {
+    console.error("start_miner failed", err);
+    throw err;
+  }
 }
 export async function stopMiner() {
   return await invoke("stop_miner");

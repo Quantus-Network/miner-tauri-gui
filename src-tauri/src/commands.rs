@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     miner::{self, MinerConfig},
@@ -31,7 +31,25 @@ pub struct StartMinerArgs {
 
 #[tauri::command]
 pub async fn start_miner(app: AppHandle, args: StartMinerArgs) -> Result<(), String> {
-    miner::start(
+    #[derive(Serialize)]
+    struct UiLog<'a> {
+        source: &'a str,
+        line: String,
+    }
+
+    let _ = app.emit(
+        "miner:log",
+        &UiLog {
+            source: "ui",
+            line: format!(
+                "Starting miner: binary={}, chain={}, rewards_address={}, extra_args={:?}",
+                args.binary_path, args.chain, args.rewards_address, args.extra_args
+            ),
+        },
+    );
+
+    let app_clone = app.clone();
+    match miner::start(
         app,
         MinerConfig {
             chain: args.chain,
@@ -41,7 +59,29 @@ pub async fn start_miner(app: AppHandle, args: StartMinerArgs) -> Result<(), Str
         },
     )
     .await
-    .map_err(|e| e.to_string())
+    {
+        Ok(_) => {
+            let _ = app_clone.emit(
+                "miner:log",
+                &UiLog {
+                    source: "ui",
+                    line: "Miner started".into(),
+                },
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let msg = format!("Start failed: {e}");
+            let _ = app_clone.emit(
+                "miner:log",
+                &UiLog {
+                    source: "ui",
+                    line: msg.clone(),
+                },
+            );
+            Err(e.to_string())
+        }
+    }
 }
 
 #[tauri::command]

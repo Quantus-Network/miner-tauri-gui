@@ -37,9 +37,20 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
 
     let acct_path = account_json_path(&app);
     let acct = AccountJson::load_from_file(&acct_path)?;
+    // Map UI chain to CLI arg; disable heisenberg until required binary is released
+    let cli_chain = match cfg.chain.as_str() {
+        "resonance" => "live_resonance",
+        "heisenberg" => {
+            return Err(anyhow!(
+                "Heisenberg is not available yet (requires quantus-node 0.1.6-98ceb8de72a)"
+            ));
+        }
+        other => other,
+    };
+
     let mut args = vec![
         "--chain".into(),
-        cfg.chain.clone(),
+        cli_chain.into(),
         "--rewards-address".into(),
         acct.address.clone(),
     ];
