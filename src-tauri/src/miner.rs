@@ -403,6 +403,177 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
     args.extend(cfg.extra_args.clone());
 
     let bin_path = cfg.binary_path.clone();
+
+    // If external miner is requested, start it first and wait for its HTTP port to accept
+    if let (Some(cores), Some(port)) = (cfg.external_num_cores, cfg.external_port) {
+        // clamp cores to sane range: 1..(available-1)
+        let max_cores = num_cpus::get().saturating_sub(1).max(1);
+        let want_cores = cores.min(max_cores).max(1);
+        let _ = app.emit(
+            "miner:log",
+            &LogMsg {
+                source: "ui",
+                line: format!(
+                    "Starting external miner with --num-cores {} on port {}",
+                    want_cores, port
+                ),
+            },
+        );
+        match crate::installer::spawn_external_miner(crate::installer::ExternalMinerConfig {
+            num_cores: want_cores,
+            port,
+        })
+        .await
+        {
+            Ok(mut handle) => {
+                // external miner file logging when log_to_file is on
+                if cfg.log_to_file {
+                    if let Some(mut p) = dirs::data_local_dir() {
+                        p.push("quantus-miner");
+                        p.push("logs");
+                        let _ = std::fs::create_dir_all(&p);
+                        let pid = handle.child.id().unwrap_or(0);
+                        let ts = time::OffsetDateTime::now_utc()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_else(|_| "now".into())
+                            .replace(':', "-");
+                        let fname = format!("quantus-miner-{}-{}.log", pid, ts);
+                        p.push(fname);
+                        if let Ok(mut f) = std::fs::File::create(&p) {
+                            // Inform UI of external miner logfile path
+                            let _ = app.emit(
+                                "miner:log",
+                                &LogMsg {
+                                    source: "ui",
+                                    line: format!(
+                                        "External miner logging to file: {}",
+                                        p.display()
+                                    ),
+                                },
+                            );
+                            let _ = app.emit(
+                                "miner:logfile",
+                                &serde_json::json!({ "path": p.display().to_string(), "kind": "ext" }),
+                            );
+                            // tee stdout/stderr to file
+                            if let Some(out) = handle.child.stdout.take() {
+                                let mut writer = f.try_clone().ok();
+                                let app_clone2 = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    use tokio::io::{AsyncBufReadExt, BufReader};
+                                    let mut reader = BufReader::new(out).lines();
+                                    while let Ok(Some(line)) = reader.next_line().await {
+                                        if let Some(ref mut wf) = writer {
+                                            use std::io::Write;
+                                            let _ = writeln!(wf, "{}", line);
+                                        }
+                                        let _ = app_clone2.emit(
+                                            "miner:log",
+                                            &LogMsg {
+                                                source: "stdout",
+                                                line,
+                                            },
+                                        );
+                                    }
+                                });
+                            }
+                            if let Some(err) = handle.child.stderr.take() {
+                                let mut writer = f.try_clone().ok();
+                                let app_clone2 = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    use tokio::io::{AsyncBufReadExt, BufReader};
+                                    let mut reader = BufReader::new(err).lines();
+                                    while let Ok(Some(line)) = reader.next_line().await {
+                                        if let Some(ref mut wf) = writer {
+                                            use std::io::Write;
+                                            let _ = writeln!(wf, "{}", line);
+                                        }
+                                        let _ = app_clone2.emit(
+                                            "miner:log",
+                                            &LogMsg {
+                                                source: "stderr",
+                                                line,
+                                            },
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // forward external miner stdout/stderr to UI logs (no file)
+                    if let Some(mut out) = handle.child.stdout.take() {
+                        let app_clone2 = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            use tokio::io::{AsyncBufReadExt, BufReader};
+                            let mut reader = BufReader::new(out).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = app_clone2.emit(
+                                    "miner:log",
+                                    &LogMsg {
+                                        source: "stdout",
+                                        line,
+                                    },
+                                );
+                            }
+                        });
+                    }
+                    if let Some(mut err) = handle.child.stderr.take() {
+                        let app_clone2 = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            use tokio::io::{AsyncBufReadExt, BufReader};
+                            let mut reader = BufReader::new(err).lines();
+                            while let Ok(Some(line)) = reader.next_line().await {
+                                let _ = app_clone2.emit(
+                                    "miner:log",
+                                    &LogMsg {
+                                        source: "stderr",
+                                        line,
+                                    },
+                                );
+                            }
+                        });
+                    }
+                }
+
+                // Wait for HTTP port to accept connections (simple TCP connect loop)
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let addr = format!("127.0.0.1:{}", handle.port);
+                let mut ready = false;
+                while std::time::Instant::now() < deadline {
+                    if std::net::TcpStream::connect(&addr).is_ok() {
+                        ready = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                if !ready {
+                    let _ = app.emit(
+                        "miner:log",
+                        &LogMsg {
+                            source: "ui",
+                            line: format!(
+                                "External miner port {} not accepting connections yet; quantus-node may get connection refused until it comes up",
+                                port
+                            ),
+                        },
+                    );
+                }
+                *EXT_MINER.lock().await = Some(handle);
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "miner:log",
+                    &LogMsg {
+                        source: "ui",
+                        line: format!("Failed to start external miner: {e}"),
+                    },
+                );
+            }
+        }
+    }
+
+    // Now build and spawn quantus-node
     let mut cmd = Command::new(&bin_path);
 
     // Emit planned command for UI (binary + args), matching what we will actually run.
@@ -475,21 +646,21 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "now".into())
                 .replace(':', "-");
-            let fname = format!("miner-{}-{}.log", pid, ts);
+            let fname = format!("quantus-node-{}-{}.log", pid, ts);
             p.push(fname);
             if let Ok(f) = std::fs::File::create(&p) {
                 log_file = Some(f);
-                // Inform UI of logfile path
+                // Inform UI of logfile path (node)
                 let _ = app.emit(
                     "miner:log",
                     &LogMsg {
                         source: "ui",
-                        line: format!("Logging to file: {}", p.display()),
+                        line: format!("Node logging to file: {}", p.display()),
                     },
                 );
                 let _ = app.emit(
                     "miner:logfile",
-                    &serde_json::json!({ "path": p.display().to_string() }),
+                    &serde_json::json!({ "path": p.display().to_string(), "kind": "node" }),
                 );
             }
         }

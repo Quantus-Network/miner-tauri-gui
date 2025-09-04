@@ -231,44 +231,71 @@ pub async fn ensure_external_miner_installed() -> Result<PathBuf> {
         .json()
         .await?;
 
-    let tgt = miner_target();
-    let wanted_prefix = format!(
-        "quantus-miner-{}-{}-{}",
-        rel.tag_name, tgt.arch_tag, tgt.os_tag
-    );
+    // Current release assets are plain binaries named like:
+    //  - quantus-miner-linux-x86_64
+    //  - quantus-miner-macos-aarch64
+    //  - quantus-miner-windows-x86_64.exe
+    // So we match by platform-friendly substrings instead of archived names.
+    #[cfg(target_os = "linux")]
+    let want_os = "linux";
+    #[cfg(target_os = "macos")]
+    let want_os = "macos";
+    #[cfg(target_os = "windows")]
+    let want_os = "windows";
+
+    #[cfg(target_arch = "x86_64")]
+    let want_arch = "x86_64";
+    #[cfg(target_arch = "aarch64")]
+    let want_arch = "aarch64";
+
+    let is_windows = cfg!(target_os = "windows");
+
+    let name_matches = |n: &str| {
+        let nl = n.to_lowercase();
+        nl.starts_with("quantus-miner")
+            && nl.contains(want_os)
+            && nl.contains(want_arch)
+            && (!is_windows || nl.ends_with(".exe"))
+            && (is_windows || !nl.ends_with(".exe"))
+    };
+
     let asset = rel
         .assets
         .iter()
-        .find(|a| a.name.starts_with(&wanted_prefix) && a.name.ends_with(tgt.ext))
+        .find(|a| name_matches(&a.name))
         .ok_or_else(|| {
             anyhow!(
-                "no external miner asset for target: {wanted_prefix}{}",
-                tgt.ext
+                "no external miner asset for target (os={}, arch={}): available={:?}",
+                want_os,
+                want_arch,
+                rel.assets.iter().map(|a| &a.name).collect::<Vec<_>>()
             )
         })?;
 
+    // Download to a temp path
     let tmp = tempfile::Builder::new()
         .prefix("quantus-miner-")
         .tempdir()?;
-    let archive_path = tmp.path().join(&asset.name);
+    let download_path = tmp.path().join(&asset.name);
 
     let mut resp = client
         .get(&asset.browser_download_url)
         .send()
         .await?
         .error_for_status()?;
-    let mut file = tokio::fs::File::create(&archive_path).await?;
+    let mut file = tokio::fs::File::create(&download_path).await?;
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = resp.chunk().await? {
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
 
-    if tgt.ext == ".tar.gz" {
-        extract_tar_gz(&archive_path, &bin_dir)?;
-    } else {
-        extract_zip(&archive_path, &bin_dir)?;
-    }
+    // If the asset is a plain binary, move it into place and make it executable.
+    // If it's ever distributed as an archive again, extend this logic accordingly.
+    // For now, releases list plain binaries; just place them as miner_exe_name().
+    let final_dest = bin_dir.join(miner_exe_name());
+    // On Windows, keep .exe; on others, remove any suffix and rename to the expected name
+    std::fs::copy(&download_path, &final_dest)?;
 
     #[cfg(unix)]
     {
@@ -294,7 +321,9 @@ pub async fn spawn_external_miner(cfg: ExternalMinerConfig) -> Result<ExternalMi
     ];
 
     let mut cmd = Command::new(&bin);
-    cmd.args(&args)
+    // Ensure the external miner emits logs
+    cmd.env("RUST_LOG", "info")
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

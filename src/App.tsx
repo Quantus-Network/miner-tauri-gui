@@ -64,6 +64,9 @@ export default function App() {
   const [plannedCmd, setPlannedCmd] = useState<string>("");
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
   const [toast, setToast] = useState<string>("");
+  // log file paths (prefer external miner when present)
+  const [nodeLogPath, setNodeLogPath] = useState<string>("");
+  const [extLogPath, setExtLogPath] = useState<string>("");
   const [status, setStatus] = useState<
     "Idle" | "Starting" | "Syncing" | "Mining" | "Repairing" | "Error"
   >("Idle");
@@ -272,7 +275,7 @@ export default function App() {
       ) {
         // Do not trigger celebrate(); briefly indicate MAYBE by setting Syncing (neutral) and a toast.
         setStatus((prev) => (prev === "Mining" ? prev : "Syncing"));
-        showToast("Block prepared (maybe) – waiting for acceptance…");
+        showToast("Block prepared – waiting for consensus…");
       }
 
       // Status inference:

@@ -73,8 +73,23 @@ export function onMinerMeta(cb: (m: MinerMeta) => void) {
   return listen<MinerMeta>("miner:meta", (e) => cb(e.payload));
 }
 
-export function onMinerLogFile(cb: (path: string) => void) {
-  return listen<{ path: string }>("miner:logfile", (e) => cb(e.payload.path));
+/**
+ * Subscribe to logfile events.
+ * Payload may include a 'kind' field:
+ *  - "ext" for external miner
+ *  - "node" for quantus-node
+ * Prefer external miner path when available; otherwise fall back to node log path.
+ */
+export function onMinerLogFile(
+  cb: (path: string, kind: "ext" | "node") => void,
+) {
+  return listen<{ path: string; kind?: "ext" | "node" }>(
+    "miner:logfile",
+    (e) => {
+      const kind = e.payload.kind || "node";
+      cb(e.payload.path, kind);
+    },
+  );
 }
 
 export async function startMiner(
