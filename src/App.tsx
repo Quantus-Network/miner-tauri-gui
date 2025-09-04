@@ -530,10 +530,7 @@ export default function App() {
           />
         </div>
       </div>
-      <h1 className="text-2xl font-bold mb-2">Quantus Miner (Demo)</h1>
-      <p className="opacity-70 mb-6">
-        Creates a local account and wraps the CLI miner.
-      </p>
+      <h1 className="text-2xl font-bold mb-4">Quantus Miner (Demo)</h1>
 
       <div className="grid gap-4 md:grid-cols-2 items-start">
         <div className="rounded-2xl shadow p-4 mb-4 border">

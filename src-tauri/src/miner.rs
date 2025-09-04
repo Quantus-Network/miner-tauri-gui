@@ -724,6 +724,7 @@ async fn query_local_node_status() -> Result<MinerStatus> {
         is_syncing,
         bootnode_connected: None,
         bootnode_host: None,
+        bootnode_stale_secs: None,
     })
 }
 
@@ -823,7 +824,7 @@ fn spawn_status_task(app: AppHandle) {
             }
 
             // Read one message with a small timeout; update best height on new head
-            let mut got_update = false;
+            let mut _got_update = false;
             if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(400), ws.next()).await
             {
                 match msg {
@@ -843,7 +844,7 @@ fn spawn_status_task(app: AppHandle) {
                                 if let Some(n) = parse_u64_from_json(numv) {
                                     if best != Some(n) {
                                         best = Some(n);
-                                        got_update = true;
+                                        _got_update = true;
                                     }
                                 }
                             }
@@ -874,13 +875,13 @@ fn spawn_status_task(app: AppHandle) {
                                 let np = p as u32;
                                 if peers != Some(np) {
                                     peers = Some(np);
-                                    got_update = true;
+                                    _got_update = true;
                                 }
                             }
                             if let Some(s) = res.get("isSyncing").and_then(|x| x.as_bool()) {
                                 if is_syncing != Some(s) {
                                     is_syncing = Some(s);
-                                    got_update = true;
+                                    _got_update = true;
                                 }
                             }
                         }
@@ -929,7 +930,7 @@ fn spawn_status_task(app: AppHandle) {
                                     };
                                     if new_h != highest {
                                         highest = new_h;
-                                        got_update = true;
+                                        _got_update = true;
                                     }
                                     last_bootnode_update = Some(std::time::Instant::now());
                                 }
