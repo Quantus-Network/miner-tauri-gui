@@ -684,26 +684,6 @@ export default function App() {
               >
                 Open
               </button>
-              <button
-                className="rounded px-2 py-0.5 border text-xs"
-                onClick={async () => {
-                  try {
-                    const { revealItemInDir } = await import(
-                      "@tauri-apps/plugin-opener"
-                    );
-                    if (accountJsonPath) {
-                      await revealItemInDir(accountJsonPath);
-                    } else {
-                      showToast("Account path not available yet");
-                    }
-                  } catch (e) {
-                    console.error("open account json failed", e);
-                  }
-                }}
-                title="Open the account JSON file in your system file manager"
-              >
-                Open
-              </button>
             </div>
             <div className="font-mono break-all whitespace-pre-wrap">
               {accountJsonPath || "…"}
