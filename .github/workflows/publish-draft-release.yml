@@ -1,25 +1,93 @@
-name: Release (Tauri)
+name: Publish draft release
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-[a-zA-Z0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver (e.g. 0.3.2 or 0.3.2-beta.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semver.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate semver
+        id: semver
+        run: |
+          V="${{ inputs.version }}"
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z\.\-]+)?$ ]]; then
+            echo "Invalid semver: $V" >&2
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Set tag output
+        id: meta
+        run: echo "tag=v${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install jq and cargo-edit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          cargo install cargo-edit
+
+      - name: Bump package.json
+        run: |
+          V="${{ steps.semver.outputs.version }}"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='${V}';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+
+      - name: Bump src-tauri/tauri.conf.json
+        run: |
+          V="${{ steps.semver.outputs.version }}"
+          jq --arg v "$V" '
+            (.version        |= $v)
+          ' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json src-tauri/tauri.conf.json
+
+      - name: Bump src-tauri/Cargo.toml
+        run: |
+          V="${{ steps.semver.outputs.version }}"
+          cargo set-version --manifest-path src-tauri/Cargo.toml "$V"
+
+      - name: Commit and tag
+        run: |
+          V="${{ steps.semver.outputs.version }}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git commit -m "chore(release): v$V"
+          git tag "v$V"
+          git push origin HEAD
+          git push origin "v$V"
+
   verify-versions:
+    name: Verify versions
+    needs: bump
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.out.outputs.version }}
       tag: ${{ steps.out.outputs.tag }}
     steps:
-      - name: Checkout (push)
-        if: github.event_name == 'push'
+      - name: Checkout updated code
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.bump.outputs.tag }}
           fetch-depth: 0
 
       - name: Setup Node
@@ -27,34 +95,24 @@ jobs:
         with:
           node-version: 22
 
-      - name: Read versions
+      - name: Read and verify versions
         id: out
         run: |
-          TAG="${GITHUB_REF##*/}"            # vX.Y.Z
-          SHA="$GITHUB_SHA"
-
-          if [ -z "$TAG" ]; then
-            echo "Could not determine tag for commit $SHA"
-            exit 1
-          fi
-
-          VER="${TAG#v}"                     # X.Y.Z
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          V="${{ needs.bump.outputs.version }}"
+          TAG="v$V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
           PKG=$(node -p "require('./package.json').version")
           TAURI=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
           PY='import tomllib,sys;print(tomllib.load(open("src-tauri/Cargo.toml","rb"))["package"]["version"])'
           CARGO=$(python3 -c "$PY")
-
           echo "Tag:             $TAG"
-          echo "Tag version:     $VER"
+          echo "Version:         $V"
           echo "package.json:    $PKG"
           echo "tauri.conf.json: $TAURI"
           echo "Cargo.toml:      $CARGO"
-
-          if [ "$PKG" != "$VER" ] || [ "$TAURI" != "$VER" ] || [ "$CARGO" != "$VER" ]; then
-            echo "❌ Version mismatch; make sure all files match tag v$VER"
+          if [ "$PKG" != "$V" ] || [ "$TAURI" != "$V" ] || [ "$CARGO" != "$V" ]; then
+            echo "❌ Version mismatch; make sure all files match $V"
             exit 1
           fi
 
@@ -84,6 +142,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-versions.outputs.tag }}
+          fetch-depth: 0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -131,15 +192,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing (optional; comment out if you don't sign)
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ needs.verify-versions.outputs.tag }} # e.g. v0.3.2
-          releaseName: "Quantus Miner ${{ needs.verify-versions.outputs.tag }}"
-          releaseBody: "Automated Tauri release for ${{ needs.verify-versions.outputs.tag }}"
+          tagName: v${{ needs.verify-versions.outputs.version }}
+          releaseName: "Quantus Miner v${{ needs.verify-versions.outputs.version }}"
+          releaseBody: "Automated Tauri release for v${{ needs.verify-versions.outputs.version }}"
           releaseDraft: true
-          prerelease: ${{ contains(needs.verify-versions.outputs.tag, '-') }}
+          prerelease: ${{ contains(needs.verify-versions.outputs.version, '-') }}
           # If you want universal mac builds and NSIS on Windows, tauri-action auto-detects from config
 
       # Portable, user-space artifacts (no root/admin required)
