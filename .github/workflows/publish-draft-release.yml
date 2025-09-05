@@ -39,7 +39,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install jq and cargo-edit
         run: |
@@ -65,16 +65,16 @@ jobs:
           V="${{ steps.semver.outputs.version }}"
           cargo set-version --manifest-path src-tauri/Cargo.toml "$V"
 
-      - name: Commit and tag
-        run: |
-          V="${{ steps.semver.outputs.version }}"
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
-          git commit -m "chore(release): v$V"
-          git tag "v$V"
-          git push origin HEAD
-          git push origin "v$V"
+      - name: Upload bumped source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-v${{ steps.semver.outputs.version }}
+          path: |
+            .
+            !.git
+            !node_modules
+            !src-tauri/target
+          retention-days: 7
 
   verify-versions:
     name: Verify versions
@@ -84,11 +84,11 @@ jobs:
       version: ${{ steps.out.outputs.version }}
       tag: ${{ steps.out.outputs.tag }}
     steps:
-      - name: Checkout updated code
-        uses: actions/checkout@v4
+      - name: Download bumped source
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ needs.bump.outputs.tag }}
-          fetch-depth: 0
+          name: source-v${{ needs.bump.outputs.version }}
+          path: .
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -116,15 +116,6 @@ jobs:
             exit 1
           fi
 
-      - name: Cache node_modules (primary)
-        uses: actions/cache@v4
-        with:
-          path: |
-            **/node_modules
-            ~/.pnpm-store
-          key: verify-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-        continue-on-error: true
-
   build:
     name: Build ${{ matrix.platform }}
     needs: verify-versions
@@ -141,10 +132,11 @@ jobs:
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Download bumped source
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ needs.verify-versions.outputs.tag }}
-          fetch-depth: 0
+          name: source-v${{ needs.verify-versions.outputs.version }}
+          path: .
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -187,18 +179,17 @@ jobs:
             src-tauri/target
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Build & Release with Tauri action
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build (no release)
+        run: pnpm tauri build
+
+      - name: Upload Tauri bundles
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v${{ needs.verify-versions.outputs.version }}
-          releaseName: "Quantus Miner v${{ needs.verify-versions.outputs.version }}"
-          releaseBody: "Automated Tauri release for v${{ needs.verify-versions.outputs.version }}"
-          releaseDraft: true
-          prerelease: ${{ contains(needs.verify-versions.outputs.version, '-') }}
-          # If you want universal mac builds and NSIS on Windows, tauri-action auto-detects from config
+          name: bundles-${{ matrix.platform }}-v${{ needs.verify-versions.outputs.version }}
+          path: |
+            src-tauri/target/release/bundle/**/*
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Portable, user-space artifacts (no root/admin required)
       - name: Package Linux portable tar.gz
@@ -208,11 +199,12 @@ jobs:
 
       - name: Upload Linux portable tar.gz
         if: matrix.os == 'ubuntu-latest'
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          files: quantus-miner-${{ needs.verify-versions.outputs.version }}-linux-x86_64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: portable-linux-x86_64-v${{ needs.verify-versions.outputs.version }}
+          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Package Windows portable zip
         if: matrix.os == 'windows-latest'
@@ -224,8 +216,64 @@ jobs:
 
       - name: Upload Windows portable zip
         if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-windows-x86_64-v${{ needs.verify-versions.outputs.version }}
+          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  commit_tag:
+    name: Commit and tag
+    needs: [verify-versions, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download bumped source
+        uses: actions/download-artifact@v4
+        with:
+          name: source-v${{ needs.verify-versions.outputs.version }}
+          path: .
+
+      - name: Commit and tag
+        run: |
+          V="${{ needs.bump.outputs.version }}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(release): v$V"
+          fi
+          git tag "v$V"
+          git push origin HEAD
+          git push origin "v$V"
+
+  publish:
+    name: Publish draft release
+    needs: [commit_tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-v${{ github.event.inputs.version }}*"
+          merge-multiple: true
+          path: ./artifacts
+
+      - name: Create GitHub draft release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
-          files: quantus-miner-${{ needs.verify-versions.outputs.version }}-windows-x86_64.zip
+          tag_name: v${{ github.event.inputs.version }}
+          name: "Quantus Miner v${{ github.event.inputs.version }}"
+          body: "Automated Tauri draft release for v${{ github.event.inputs.version }}"
+          draft: true
+          prerelease: ${{ contains(github.event.inputs.version, '-') }}
+          files: ./artifacts/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
