@@ -272,7 +272,30 @@ jobs:
 
       - name: Commit and tag
         run: |
-          V="${{ needs.bump.outputs.version }}"
+          set -euo pipefail
+          V="${{ needs.verify-versions.outputs.version }}"
+          BRANCH="$(git branch --show-current)"
+          echo "Debug: version='$V' branch='$BRANCH'"
+          # Validate version is non-empty and semver
+          if [ -z "$V" ]; then
+            echo "Error: empty version resolved; refusing to create tag 'v'"
+            exit 1
+          fi
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z\.\-]+)?$'; then
+            echo "Error: invalid semver '$V'"
+            exit 1
+          fi
+          if [ -z "$BRANCH" ]; then
+            BRANCH="${GITHUB_REF_NAME:-}"
+            echo "Debug: resolved branch from GITHUB_REF_NAME='$BRANCH'"
+          fi
+          git fetch origin "$BRANCH" --tags
+          # Rebase to avoid non-fast-forward updates
+          if ! git rebase "origin/$BRANCH"; then
+            git rebase --abort || true
+            echo "Rebase failed; please resolve branch state"
+            exit 1
+          fi
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
@@ -281,9 +304,20 @@ jobs:
           else
             git commit -m "chore(release): v$V"
           fi
-          git tag "v$V"
-          git push origin HEAD
-          git push origin "v$V"
+          # Create tag locally if valid and missing
+          if git rev-parse "v$V" >/dev/null 2>&1; then
+            echo "Local tag v$V already exists"
+          else
+            git tag "v$V"
+          fi
+          # Push branch
+          git push origin "$BRANCH"
+          # Push tag only if it does not already exist on remote
+          if git ls-remote --tags origin "v$V" | grep -q "refs/tags/v$V"; then
+            echo "Remote tag v$V already exists; skipping tag push"
+          else
+            git push origin "v$V"
+          fi
 
   publish:
     name: Publish draft release
