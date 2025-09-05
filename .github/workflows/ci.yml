@@ -28,7 +28,7 @@ jobs:
     needs: setup
     defaults:
       run:
-        working-directory: miner
+        working-directory: .
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
           node-version: ${{ needs.setup.outputs.node-version }}
           cache: pnpm
           cache-dependency-path: |
-            miner/pnpm-lock.yaml
+            ./pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -62,7 +62,7 @@ jobs:
     needs: setup
     defaults:
       run:
-        working-directory: miner/src-tauri
+        working-directory: ./src-tauri
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
@@ -82,7 +82,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            miner/src-tauri -> target
+            ./src-tauri -> target
           cache-on-failure: true
 
       - name: rustfmt (check)
