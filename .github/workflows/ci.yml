@@ -117,4 +117,4 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build (dev profile)
-        run: cargo build --verbose
+        run: cargo check --all-targets --all-features --verbose
