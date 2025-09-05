@@ -425,6 +425,17 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
         "--rewards-address".into(),
         acct.address.clone(),
     ];
+    // Choose a new random P2P port in 30333-30999 on every start
+    let p2p_port: u16 = 30333 + (rand::random::<u16>() % (30999 - 30333 + 1));
+    let _ = app.emit(
+        "miner:log",
+        &LogMsg {
+            source: "ui",
+            line: format!("Using randomized P2P port: {}", p2p_port),
+        },
+    );
+    args.push("--port".into());
+    args.push(p2p_port.to_string());
     args.extend(cfg.extra_args.clone());
 
     let bin_path = cfg.binary_path.clone();
