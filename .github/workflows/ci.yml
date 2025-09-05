@@ -82,9 +82,9 @@ jobs:
           components: rustfmt, clippy
           override: true
 
-      - name: Setup vcpkg (Windows)
+      - name: Windows setup
         if: runner.os == 'Windows'
-        uses: microsoft/setup-vcpkg@v1
+        run: echo "No additional dependencies required on Windows"
 
       - name: macOS setup
         if: runner.os == 'macOS'
