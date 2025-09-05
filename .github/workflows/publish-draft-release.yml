@@ -42,6 +42,8 @@ jobs:
           node-version: 22
 
       - name: Install jq and cargo-edit
+        env:
+          CARGO_TERM_COLOR: always
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
@@ -185,16 +187,23 @@ jobs:
       - name: Build (no release)
         run: pnpm tauri build
 
-      - name: Upload Tauri bundles
+      - name: Collect Linux AppImage
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          APP="$(ls -1 src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)"
+          if [ -z "$APP" ]; then echo "No AppImage found"; exit 1; fi
+          cp "$APP" "quantus-miner-${{ needs.verify-versions.outputs.version }}-linux-x86_64.AppImage"
+
+      - name: Upload Linux AppImage
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: bundles-${{ matrix.platform }}-v${{ needs.verify-versions.outputs.version }}
-          path: |
-            src-tauri/target/release/bundle/**/*
-          if-no-files-found: ignore
+          name: linux-appimage-v${{ needs.verify-versions.outputs.version }}
+          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-linux-x86_64.AppImage
+          if-no-files-found: error
           retention-days: 7
 
-      # Portable, user-space artifacts (no root/admin required)
       - name: Package Linux portable tar.gz
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -204,25 +213,44 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: portable-linux-x86_64-v${{ needs.verify-versions.outputs.version }}
+          name: linux-portable-tar-v${{ needs.verify-versions.outputs.version }}
           path: quantus-miner-${{ needs.verify-versions.outputs.version }}-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-      - name: Package Windows portable zip
+      # Collect and upload macOS installer
+      - name: Collect macOS DMG
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          DMG="$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)"
+          if [ -z "$DMG" ]; then echo "No DMG found"; exit 1; fi
+          cp "$DMG" "quantus-miner-${{ needs.verify-versions.outputs.version }}-macos-universal.dmg"
+
+      - name: Upload macOS DMG
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-v${{ needs.verify-versions.outputs.version }}
+          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-macos-universal.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect Windows NSIS installer
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $Version = "${{ needs.verify-versions.outputs.version }}"
-          $Out = "quantus-miner-$Version-windows-x86_64.zip"
-          Compress-Archive -Path "src-tauri\target\release\quantus-miner.exe" -DestinationPath $Out -Force
+          $pattern = "src-tauri\target\release\bundle\nsis\*-setup.exe"
+          $exe = Get-ChildItem -Path $pattern | Select-Object -First 1
+          if (-not $exe) { throw "No NSIS installer found" }
+          Copy-Item $exe.FullName "quantus-miner-${{ needs.verify-versions.outputs.version }}-windows-x86_64-setup.exe" -Force
 
-      - name: Upload Windows portable zip
+      - name: Upload Windows NSIS installer
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: portable-windows-x86_64-v${{ needs.verify-versions.outputs.version }}
-          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-windows-x86_64.zip
+          name: windows-nsis-v${{ needs.verify-versions.outputs.version }}
+          path: quantus-miner-${{ needs.verify-versions.outputs.version }}-windows-x86_64-setup.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -265,7 +293,7 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: "*-v${{ github.event.inputs.version }}*"
+          pattern: "*-v${{ github.event.inputs.version }}"
           merge-multiple: true
           path: ./artifacts
 
@@ -277,6 +305,10 @@ jobs:
           body: "Automated Tauri draft release for v${{ github.event.inputs.version }}"
           draft: true
           prerelease: ${{ contains(github.event.inputs.version, '-') }}
-          files: ./artifacts/**
+          files: |
+            ./artifacts/quantus-miner-${{ github.event.inputs.version }}-linux-x86_64.AppImage
+            ./artifacts/quantus-miner-${{ github.event.inputs.version }}-linux-x86_64.tar.gz
+            ./artifacts/quantus-miner-${{ github.event.inputs.version }}-macos-universal.dmg
+            ./artifacts/quantus-miner-${{ github.event.inputs.version }}-windows-x86_64-setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

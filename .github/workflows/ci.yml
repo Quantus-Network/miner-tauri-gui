@@ -57,7 +57,7 @@ jobs:
         run: pnpm build
 
   tauri:
-    name: Rust (fmt, clippy, build)
+    name: Rust validations
     runs-on: ${{ matrix.os }}
     needs: setup
     strategy:
