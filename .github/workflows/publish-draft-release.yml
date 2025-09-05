@@ -264,11 +264,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync branch to origin
+        run: |
+          set -euo pipefail
+          BRANCH="$(git branch --show-current)"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="${GITHUB_REF_NAME:-}"
+          fi
+          echo "Syncing branch '$BRANCH' to origin/$BRANCH"
+          git fetch origin "$BRANCH" --tags
+          git checkout "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+          git clean -fdx
+
       - name: Download bumped source
         uses: actions/download-artifact@v4
         with:
           name: source-v${{ needs.verify-versions.outputs.version }}
-          path: .
+          path: ./_bumped_src
 
       - name: Commit and tag
         run: |
@@ -289,15 +302,13 @@ jobs:
             BRANCH="${GITHUB_REF_NAME:-}"
             echo "Debug: resolved branch from GITHUB_REF_NAME='$BRANCH'"
           fi
-          git fetch origin "$BRANCH" --tags
-          # Rebase to avoid non-fast-forward updates
-          if ! git rebase "origin/$BRANCH"; then
-            git rebase --abort || true
-            echo "Rebase failed; please resolve branch state"
-            exit 1
-          fi
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+          # Copy only version files from the downloaded artifact into the repo to avoid unstaged changes
+          cp "_bumped_src/package.json" "./package.json"
+          mkdir -p "./src-tauri"
+          cp "_bumped_src/src-tauri/tauri.conf.json" "./src-tauri/tauri.conf.json"
+          cp "_bumped_src/src-tauri/Cargo.toml" "./src-tauri/Cargo.toml"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           if git diff --cached --quiet; then
             echo "No changes to commit."
