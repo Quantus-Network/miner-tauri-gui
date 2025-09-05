@@ -3,14 +3,14 @@ name: Release (Tauri)
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-[a-zA-Z0-9]+.[0-9]+"
 
 permissions:
   contents: write
 
 jobs:
   verify-versions:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.out.outputs.version }}
