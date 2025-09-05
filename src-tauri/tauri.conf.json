@@ -26,13 +26,11 @@
     "targets": ["appimage", "dmg", "nsis"],
     "category": "Utility",
     "shortDescription": "Post-quantum PoW miner for the Quantus network",
-    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
     "windows": {
       "nsis": {
-        "oneClick": false,
-        "allowToChangeInstallationDirectory": true,
         "displayLanguageSelector": true,
-        "perMachine": false
+        "installMode": "currentUser"
       }
     }
   }
