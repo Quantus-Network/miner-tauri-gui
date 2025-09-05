@@ -3,32 +3,52 @@ name: Release (Tauri)
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
   verify-versions:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.out.outputs.version }}
+      tag: ${{ steps.out.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (push)
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Read versions
         id: out
         run: |
           TAG="${GITHUB_REF##*/}"            # vX.Y.Z
+          SHA="$GITHUB_SHA"
+
+          if [ -z "$TAG" ]; then
+            echo "Could not determine tag for commit $SHA"
+            exit 1
+          fi
+
           VER="${TAG#v}"                     # X.Y.Z
           echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           PKG=$(node -p "require('./package.json').version")
-          TAURI=$(jq -r '.package.version' src-tauri/tauri.conf.json)
+          TAURI=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version")
           PY='import tomllib,sys;print(tomllib.load(open("src-tauri/Cargo.toml","rb"))["package"]["version"])'
           CARGO=$(python3 -c "$PY")
 
-          echo "Tag version:    $VER"
+          echo "Tag:             $TAG"
+          echo "Tag version:     $VER"
           echo "package.json:    $PKG"
           echo "tauri.conf.json: $TAURI"
           echo "Cargo.toml:      $CARGO"
@@ -115,11 +135,11 @@ jobs:
           # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }} # e.g. v0.3.2
-          releaseName: "Quantus Miner ${{ github.ref_name }}"
-          releaseBody: "Automated Tauri release for ${{ github.ref_name }}"
+          tagName: ${{ needs.verify-versions.outputs.tag }} # e.g. v0.3.2
+          releaseName: "Quantus Miner ${{ needs.verify-versions.outputs.tag }}"
+          releaseBody: "Automated Tauri release for ${{ needs.verify-versions.outputs.tag }}"
           releaseDraft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(needs.verify-versions.outputs.tag, '-') }}
           # If you want universal mac builds and NSIS on Windows, tauri-action auto-detects from config
 
       # Portable, user-space artifacts (no root/admin required)
