@@ -78,11 +78,19 @@ jobs:
           components: rustfmt, clippy
           override: true
 
-      - name: install dependencies
-        if: "contains(matrix.platform, 'ubuntu')"
+      - name: install linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libsoup3.0-dev patchelf
+          sudo apt-get install -y \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup3.0-dev \
+            patchelf
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
