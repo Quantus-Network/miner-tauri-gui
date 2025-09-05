@@ -11,7 +11,7 @@ use tokio::{
 
 use crate::account_cli::AccountJson;
 use crate::account_path::account_json_path;
-use crate::parse::{parse_event, MinerEvent};
+use crate::parse::parse_event;
 
 #[derive(Debug, Clone, Serialize)]
 struct LogMsg {
@@ -195,8 +195,11 @@ lazy_static! {
 // Helpers for per-chain safe-ranges persistence (JSON at data_dir/quantus-miner/safe_ranges.json)
 fn default_safe_ranges() -> HashMap<String, Vec<(u64, u64)>> {
     let mut m: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
-    // Resonance: performance test produced heavy blocks in this window.
-    m.insert("resonance".to_string(), vec![(13311, 13360)]);
+    // Resonance: performance test produced heavy blocks in these windows.
+    m.insert(
+        "resonance".to_string(),
+        vec![(13300, 13399), (19500, 19599)],
+    );
     m
 }
 
@@ -461,7 +464,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                             .replace(':', "-");
                         let fname = format!("quantus-miner-{}-{}.log", pid, ts);
                         p.push(fname);
-                        if let Ok(mut f) = std::fs::File::create(&p) {
+                        if let Ok(f) = std::fs::File::create(&p) {
                             // Inform UI of external miner logfile path
                             let _ = app.emit(
                                 "miner:log",
@@ -524,7 +527,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                     }
                 } else {
                     // forward external miner stdout/stderr to UI logs (no file)
-                    if let Some(mut out) = handle.child.stdout.take() {
+                    if let Some(out) = handle.child.stdout.take() {
                         let app_clone2 = app.clone();
                         tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncBufReadExt, BufReader};
@@ -540,7 +543,7 @@ pub async fn start(app: AppHandle, cfg: MinerConfig) -> Result<()> {
                             }
                         });
                     }
-                    if let Some(mut err) = handle.child.stderr.take() {
+                    if let Some(err) = handle.child.stderr.take() {
                         let app_clone2 = app.clone();
                         tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncBufReadExt, BufReader};
@@ -936,6 +939,7 @@ fn parse_u64_from_json(v: &serde_json::Value) -> Option<u64> {
 }
 
 /// Query the local Substrate JSON-RPC (ws://127.0.0.1:9944) for health and sync state.
+#[allow(dead_code)]
 async fn query_local_node_status() -> Result<MinerStatus> {
     let url = "ws://127.0.0.1:9944";
     let (mut ws, _) = tokio_tungstenite::connect_async(url)
@@ -1305,7 +1309,7 @@ fn spawn_status_task(app: AppHandle) {
 
 pub async fn stop() -> Result<()> {
     // notify UI that a stop is requested
-    if let Some(_) = MINER.lock().await.as_ref() {
+    if MINER.lock().await.as_ref().is_some() {
         // best-effort fire before actually killing
         // we don't have AppHandle here, so we can't emit; state will be confirmed on next start
     }
@@ -1378,7 +1382,7 @@ pub async fn repair_and_restart(app: AppHandle) -> Result<()> {
 async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
     // Avoid redundant work
     {
-        let active = SAFE_MODE_ACTIVE.lock().await.clone();
+        let active = *SAFE_MODE_ACTIVE.lock().await;
         if active == enable {
             return Ok(());
         }
@@ -1430,7 +1434,7 @@ async fn set_safe_mode(app: AppHandle, enable: bool) -> Result<()> {
 
 // small helper for emitting logs from async contexts
 
-fn has_max_blocks_arg(args: &Vec<String>) -> bool {
+fn has_max_blocks_arg(args: &[String]) -> bool {
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--max-blocks-per-request" {

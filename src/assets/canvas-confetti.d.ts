@@ -39,7 +39,10 @@ declare module "canvas-confetti" {
   //  confetti.reset();
   const confetti: {
     (options?: ConfettiOptions): Promise<null>;
-    create: (canvas: HTMLCanvasElement, options?: CreateOptions) => ConfettiInstance;
+    create: (
+      canvas: HTMLCanvasElement,
+      options?: CreateOptions,
+    ) => ConfettiInstance;
     reset: () => void;
   };
 

@@ -29,24 +29,26 @@ pub struct BalanceView {
 // Structure used to decode system_properties
 #[derive(Debug, Deserialize)]
 struct SystemProperties {
-    #[serde(default)]
-    tokenSymbol: Option<serde_json::Value>, // may be string or array
-    #[serde(default)]
-    tokenDecimals: Option<serde_json::Value>, // may be number or array
+    #[serde(default, rename = "tokenSymbol")]
+    token_symbol: Option<serde_json::Value>, // may be string or array
+    #[serde(default, rename = "tokenDecimals")]
+    token_decimals: Option<serde_json::Value>, // may be number or array
 }
 
 // Safe extractors for potential string/array forms
 fn extract_symbol(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Array(arr) => arr.get(0).and_then(|x| x.as_str()).map(|s| s.to_string()),
+        serde_json::Value::Array(arr) => {
+            arr.first().and_then(|x| x.as_str()).map(|s| s.to_string())
+        }
         _ => None,
     }
 }
 fn extract_decimals(v: &serde_json::Value) -> Option<u32> {
     match v {
         serde_json::Value::Number(n) => n.as_u64().map(|x| x as u32),
-        serde_json::Value::Array(arr) => arr.get(0).and_then(|x| x.as_u64()).map(|x| x as u32),
+        serde_json::Value::Array(arr) => arr.first().and_then(|x| x.as_u64()).map(|x| x as u32),
         _ => None,
     }
 }
@@ -84,16 +86,16 @@ async fn fetch_local_chain_properties() -> (String, u32) {
             if let Some(result) = r.result {
                 let props: SystemProperties =
                     serde_json::from_value(result).unwrap_or(SystemProperties {
-                        tokenSymbol: None,
-                        tokenDecimals: None,
+                        token_symbol: None,
+                        token_decimals: None,
                     });
                 let symbol = props
-                    .tokenSymbol
+                    .token_symbol
                     .as_ref()
                     .and_then(extract_symbol)
                     .unwrap_or_else(|| "RES".to_string());
                 let decimals = props
-                    .tokenDecimals
+                    .token_decimals
                     .as_ref()
                     .and_then(extract_decimals)
                     .unwrap_or(12);
@@ -117,7 +119,6 @@ pub async fn fetch_balance(ws_url: &str, address: &str) -> Result<BalanceView> {
         #[derive(Deserialize)]
         struct AccountById {
             free: Option<String>,
-            reserved: Option<String>,
         }
         #[derive(Deserialize)]
         struct Data {

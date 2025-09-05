@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
+jobs:
+  setup:
+    name: Determine matrix
+    runs-on: ubuntu-latest
+    outputs:
+      node-version: ${{ steps.matrix.outputs.node }}
+      rust-toolchain: ${{ steps.matrix.outputs.rust }}
+    steps:
+      - name: Select tool versions
+        id: matrix
+        run: |
+          echo "node=22.x" >> "$GITHUB_OUTPUT"
+          echo "rust=stable" >> "$GITHUB_OUTPUT"
+
+  frontend:
+    name: Frontend (TypeScript/Vite) build
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: miner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Setup Node ${{ needs.setup.outputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.setup.outputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: |
+            miner/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm tsc --noEmit
+
+      - name: Build (Vite)
+        run: pnpm build
+
+  rust:
+    name: Rust (fmt, clippy, build)
+    runs-on: ubuntu-latest
+    needs: setup
+    defaults:
+      run:
+        working-directory: miner/src-tauri
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust ${{ needs.setup.outputs.rust-toolchain }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ needs.setup.outputs.rust-toolchain }}
+          profile: minimal
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            miner/src-tauri -> target
+          cache-on-failure: true
+
+      - name: rustfmt (check)
+        run: cargo fmt -- --check
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (dev profile)
+        run: cargo build --verbose

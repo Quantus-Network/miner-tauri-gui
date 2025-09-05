@@ -65,8 +65,7 @@ export default function App() {
   const [accountJsonPath, setAccountJsonPath] = useState<string>("");
   const [toast, setToast] = useState<string>("");
   // log file paths (prefer external miner when present)
-  const [nodeLogPath, setNodeLogPath] = useState<string>("");
-  const [extLogPath, setExtLogPath] = useState<string>("");
+
   const [status, setStatus] = useState<
     "Idle" | "Starting" | "Syncing" | "Mining" | "Repairing" | "Error"
   >("Idle");
@@ -83,7 +82,7 @@ export default function App() {
     const v = parseInt(localStorage.getItem("qm.ext.port") || "", 10);
     return Number.isFinite(v) && v >= 1024 && v <= 65535 ? v : 9833;
   });
-  const [syncBlock, setSyncBlock] = useState<number | null>(null);
+
   const [peers, setPeers] = useState<number | null>(null);
   const [best, setBest] = useState<number | null>(null);
   const [highest, setHighest] = useState<number | null>(null);
@@ -92,9 +91,7 @@ export default function App() {
     null,
   );
   const [bootnodeHost, setBootnodeHost] = useState<string>("");
-  const [bootnodeStaleSecs, setBootnodeStaleSecs] = useState<number | null>(
-    null,
-  );
+  const [bootnodeStaleSecs] = useState<number | null>(null);
   const [meta, setMeta] = useState<Partial<MinerMeta>>(() => {
     try {
       const s = localStorage.getItem("qm.meta");
@@ -175,7 +172,6 @@ export default function App() {
           const c = chain === "quantus" ? "resonance" : chain;
           try {
             setStatus("Starting");
-            setSyncBlock(null);
             const extraArgs: string[] = [];
             if (useExternalMiner && externalPort) {
               extraArgs.push(
@@ -226,14 +222,12 @@ export default function App() {
         setHps(ev.hps);
         if (ev.hps > 0) {
           setStatus("Mining");
-          setSyncBlock(null);
         }
       }
       if (ev.type === "FoundBlock") {
         // A block was actually accepted (strong signal) – celebrate.
         celebrate();
         setStatus("Mining");
-        setSyncBlock(null);
         // Refresh balance after a found block (may reflect new rewards)
         if (account) {
           const c = chain === "quantus" ? "resonance" : chain;
@@ -291,8 +285,6 @@ export default function App() {
         // After repair, node restarts and will begin syncing
         setStatus("Syncing");
       } else if (l.includes("importing block")) {
-        const mBlock = line.match(/importing block\s+#(\d+)/i);
-        if (mBlock) setSyncBlock(Number(mBlock[1]));
         setStatus("Syncing");
       } else if (l.includes("total chain work")) {
         setStatus("Syncing");
@@ -328,7 +320,7 @@ export default function App() {
         if (typeof s.highest_block === "number") setHighest(s.highest_block);
         if (typeof s.is_syncing === "boolean" && !s.is_syncing) {
           // If RPC says not syncing and we have hashrate elsewhere, UI will move to Mining.
-          setSyncBlock(null);
+          // No-op: we no longer track syncBlock separately.
         }
         if (typeof s.safe_mode === "boolean") {
           setSafeMode(s.safe_mode);
@@ -351,13 +343,13 @@ export default function App() {
       });
     });
     // subscribe to miner:logfile to capture file path when logging starts
-    const un6 = onMinerLogFile((path: string) => {
+    const un5 = onMinerLogFile((path: string) => {
       setLogFilePath(path);
       try {
         localStorage.setItem("qm.logFilePath", path);
       } catch {}
     });
-    const un5 = onMinerState((s) => {
+    const un6 = onMinerState((s) => {
       if (typeof s.running === "boolean") {
         setMining(s.running);
         try {
@@ -378,6 +370,7 @@ export default function App() {
       un2.then((u) => u());
       un3.then((u) => u());
       un4.then((u) => u());
+      un5.then((u) => u());
       un6.then((u) => u());
     };
   }, []);
@@ -390,7 +383,6 @@ export default function App() {
     }
     try {
       setStatus("Starting");
-      setSyncBlock(null);
       const extraArgs: string[] = [];
       // If using external miner, add external miner URL arg to quantus-node
       if (useExternalMiner && externalPort) {
@@ -436,7 +428,6 @@ export default function App() {
         localStorage.setItem("qm.wasMining", "0");
       } catch {}
       setStatus("Idle");
-      setSyncBlock(null);
     } catch (err: any) {
       showToast(
         err?.message
@@ -449,6 +440,7 @@ export default function App() {
   async function onRepair() {
     setStatus("Repairing");
     try {
+      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("repair_miner");
       showToast("Repair initiated. Node will restart and resync.");
       // Status will transition to Syncing as logs come in; keep as Repairing for now.

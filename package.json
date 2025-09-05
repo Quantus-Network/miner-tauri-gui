@@ -1,20 +1,28 @@
 {
   "name": "quantus-miner",
   "private": true,
-  "version": "0.1.1-beta.3",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "fmt:ts": "prettier --write \"src/**/*.{ts,tsx,css,md,json}\"",
+    "fmt:ts:check": "prettier --check \"src/**/*.{ts,tsx,css,md,json}\"",
+    "typecheck": "tsc --noEmit",
+    "lint:ts": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=0",
+    "fmt:rs": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "fmt:rs:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    "lint:rs": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "fmt:all": "pnpm fmt:ts && pnpm fmt:rs",
+    "pushable": "pnpm fmt:ts && pnpm typecheck && pnpm fmt:rs && pnpm lint:rs && pnpm build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "canvas-confetti": "^1.9.3",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
     "@types/react": "^19.1.8",
@@ -25,6 +33,11 @@
     "@tauri-apps/cli": "^2",
     "tailwindcss": "^3.4.10",
     "postcss": "^8.4.41",
-    "autoprefixer": "^10.4.20"
+    "autoprefixer": "^10.4.20",
+    "prettier": "^3.3.3",
+    "eslint": "^9.9.0",
+    "@typescript-eslint/parser": "^8.0.1",
+    "@typescript-eslint/eslint-plugin": "^8.0.1",
+    "canvas-confetti": "^1.9.3"
   }
 }

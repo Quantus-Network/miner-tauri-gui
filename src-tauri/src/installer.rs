@@ -55,9 +55,7 @@ pub struct ExternalMinerConfig {
 
 #[derive(Debug)]
 pub struct ExternalMinerHandle {
-    pub binary_path: PathBuf,
     pub port: u16,
-    pub num_cores: usize,
     pub child: tokio::process::Child,
 }
 
@@ -67,6 +65,7 @@ struct Target {
     arch_tag: &'static str,
     ext: &'static str,
 }
+
 #[cfg(target_os = "linux")]
 fn target() -> Target {
     Target {
@@ -164,7 +163,6 @@ pub async fn ensure_quantus_node_installed() -> Result<PathBuf> {
 }
 
 /// External miner
-
 fn miner_exe_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -173,41 +171,6 @@ fn miner_exe_name() -> &'static str {
     #[cfg(not(target_os = "windows"))]
     {
         "quantus-miner"
-    }
-}
-
-fn miner_target() -> Target {
-    #[cfg(target_os = "linux")]
-    {
-        Target {
-            os_tag: "unknown-linux-gnu",
-            arch_tag: "x86_64",
-            ext: ".tar.gz",
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if cfg!(target_arch = "aarch64") {
-            Target {
-                os_tag: "apple-darwin",
-                arch_tag: "aarch64",
-                ext: ".tar.gz",
-            }
-        } else {
-            Target {
-                os_tag: "apple-darwin",
-                arch_tag: "x86_64",
-                ext: ".tar.gz",
-            }
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        Target {
-            os_tag: "pc-windows-msvc",
-            arch_tag: "x86_64",
-            ext: ".zip",
-        }
     }
 }
 
@@ -300,10 +263,10 @@ pub async fn ensure_external_miner_installed() -> Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(&dest) {
+        if let Ok(meta) = fs::metadata(&final_dest) {
             let mut p = meta.permissions();
             p.set_mode(0o755);
-            let _ = fs::set_permissions(&dest, p);
+            let _ = fs::set_permissions(&final_dest, p);
         }
     }
 
@@ -313,7 +276,7 @@ pub async fn ensure_external_miner_installed() -> Result<PathBuf> {
 /// Spawn the external miner with provided config and return a handle
 pub async fn spawn_external_miner(cfg: ExternalMinerConfig) -> Result<ExternalMinerHandle> {
     let bin = ensure_external_miner_installed().await?;
-    let mut args: Vec<String> = vec![
+    let args: Vec<String> = vec![
         "--num-cores".into(),
         cfg.num_cores.to_string(),
         "--port".into(),
@@ -331,9 +294,7 @@ pub async fn spawn_external_miner(cfg: ExternalMinerConfig) -> Result<ExternalMi
     let child = cmd.spawn()?;
 
     Ok(ExternalMinerHandle {
-        binary_path: bin,
         port: cfg.port,
-        num_cores: cfg.num_cores,
         child,
     })
 }

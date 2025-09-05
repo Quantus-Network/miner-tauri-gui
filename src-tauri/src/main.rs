@@ -9,7 +9,7 @@ mod parse;
 mod rpc;
 
 use commands::*;
-use tauri::{LogicalSize, Manager, Runtime, Size};
+use tauri::{LogicalSize, Manager, Size};
 
 fn main() {
     tauri::Builder::default()

@@ -24,7 +24,7 @@ impl AccountJson {
 }
 
 pub async fn ensure_account_json(
-    app: &AppHandle,
+    _app: &AppHandle,
     quantus_node_path: &PathBuf,
     out_path: &PathBuf,
 ) -> Result<AccountJson> {

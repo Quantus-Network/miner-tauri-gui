@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter};
 
 use crate::{
     miner::{self, MinerConfig},
@@ -160,7 +160,7 @@ pub struct SafeRangesPayload {
 }
 
 #[tauri::command]
-pub async fn get_safe_ranges(app: AppHandle) -> Result<SafeRangesPayload, String> {
+pub async fn get_safe_ranges(_app: AppHandle) -> Result<SafeRangesPayload, String> {
     // Read from current in-memory map built by miner.rs at start() time.
     let map = {
         let guard = crate::miner::SAFE_RANGES.lock().await;
