@@ -4,6 +4,15 @@ This repository contains a Tauri + React + TypeScript desktop application that w
 
 - For contributor and agent notes, see the Agents Guide: [agents.md](./agents.md)
 
-## Recommended IDE Setup
+## Running from Source
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Developer quickstart:
+- From the repo root: `cd miner`
+- Install dependencies: `pnpm install`
+- Run the Tauri app in dev mode: `pnpm run tauri dev`
+
+Notes:
+- The Tauri config runs `pnpm dev` before launching and serves the frontend at http://localhost:1420 during development.
+- You need a working Rust toolchain and the Tauri CLI v2. If needed, add the CLI with: `pnpm add -D @tauri-apps/cli`
+- Alternatively, you can use the Rust shim: `cargo tauri dev` (from `miner`) if the CLI is installed.
+- To build a release bundle: `pnpm run tauri build`
